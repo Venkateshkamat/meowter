@@ -1,0 +1,75 @@
+{
+  "name": "meowter",
+  "displayName": "Meowter",
+  "description": "Cats take over your IDE when it's time for a break.",
+  "version": "0.0.1",
+  "publisher": "venkateshkamat",
+  "author": "Venkatesh Kamat",
+  "license": "UNLICENSED",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Venkateshkamat/meowter.git"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "scripts": {
+    "compile": "tsc -p ./ && tsc -p ./tsconfig.webview.json",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "pretest:vscode": "npm run compile",
+    "pretest:cursor": "npm run compile",
+    "test": "npm run test:unit && npm run test:vscode",
+    "test:unit": "mocha \"out/test/unit/**/*.test.js\"",
+    "test:vscode": "node ./out/test/runTest.js vscode",
+    "test:cursor": "node ./out/test/runTest.js cursor"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.19.43",
+    "@types/vscode": "^1.90.0",
+    "@vscode/test-electron": "^3.1.0",
+    "mocha": "^12.0.3",
+    "typescript": "^5.9.3"
+  },
+  "contributes": {
+    "configuration": {
+      "title": "Meowter",
+      "properties": {
+        "meowter.breakIntervalMinutes": {
+          "type": "number",
+          "default": 50,
+          "minimum": 1,
+          "description": "Minutes of active IDE use before a break."
+        },
+        "meowter.idleThresholdMinutes": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "description": "Minutes without input after which time stops counting."
+        },
+        "meowter.catCount": {
+          "type": "integer",
+          "default": 8,
+          "minimum": 1,
+          "maximum": 30,
+          "description": "Number of cats shown during a break."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "meowter.setBreakInterval",
+        "title": "Meowter: Set Break Interval"
+      }
+    ]
+  }
+}
