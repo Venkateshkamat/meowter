@@ -11,7 +11,7 @@ export interface WebviewReport {
 }
 
 /**
- * Owns the Zen mode + cat webview lifecycle for one window.
+ * Owns the cat webview lifecycle for one window.
  *
  * Events:
  *  - onDidRequestPause: the user clicked the button or closed the cat tab.
@@ -21,7 +21,6 @@ export class BreakPanel implements vscode.Disposable {
   private panel: vscode.WebviewPanel | undefined;
   /** Set right before a programmatic dispose so it is not treated as a user close. */
   private programmatic = new WeakSet<vscode.WebviewPanel>();
-  private zenActive = false;
   private report: WebviewReport = { ready: false, cats: 0 };
   private readonly pauseEmitter = new vscode.EventEmitter<void>();
   readonly onDidRequestPause = this.pauseEmitter.event;
@@ -55,16 +54,6 @@ export class BreakPanel implements vscode.Disposable {
     if (this.panel) {
       return;
     }
-    // exitZenMode is a no-op outside Zen mode, so this always ends IN Zen mode.
-    await vscode.commands.executeCommand('workbench.action.exitZenMode');
-    await vscode.commands.executeCommand('workbench.action.toggleZenMode');
-    this.zenActive = true;
-    // Zen mode centers the layout by default, which squeezes the cats into a narrow column.
-    // toggleCenteredLayout is a toggle, so only run it when Zen mode just centered the layout.
-    if (vscode.workspace.getConfiguration('zenMode').get<boolean>('centerLayout')) {
-      await vscode.commands.executeCommand('workbench.action.toggleCenteredLayout');
-    }
-
     const mediaRoot = vscode.Uri.joinPath(this.extensionUri, 'media');
     const scriptRoot = vscode.Uri.joinPath(this.extensionUri, 'out', 'webview');
     const panel = vscode.window.createWebviewPanel(
@@ -135,7 +124,7 @@ export class BreakPanel implements vscode.Disposable {
     panel.reveal(panel.viewColumn ?? vscode.ViewColumn.Active, false);
   }
 
-  /** Closes the panel without signalling a pause and leaves Zen mode. Idempotent. */
+  /** Closes the panel without signalling a pause. Idempotent. */
   async close(): Promise<void> {
     const panel = this.panel;
     this.clearRefocus();
@@ -143,10 +132,6 @@ export class BreakPanel implements vscode.Disposable {
       this.programmatic.add(panel);
       this.panel = undefined;
       panel.dispose();
-    }
-    if (this.zenActive) {
-      this.zenActive = false;
-      await vscode.commands.executeCommand('workbench.action.exitZenMode');
     }
   }
 
