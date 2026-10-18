@@ -1,54 +1,73 @@
-/* Runs inside the break webview. Compiled separately (DOM lib, no modules). */
+/* Runs inside the break webview. Compiled separately (DOM lib); scripts/bundle-webview.js
+   prepends the shared cat art (src/catArt.ts) as the global `CatArt`. */
 declare function acquireVsCodeApi(): { postMessage(message: unknown): void };
+declare const CatArt: typeof import('../catArt');
 
 (function () {
   const vscodeApi = acquireVsCodeApi();
-  const SVG_W = 140;
-  const SVG_H = 110;
 
-  type Mode = 'run' | 'jump' | 'roll' | 'stretch' | 'sit' | 'chase';
+  type State =
+    | 'idle'
+    | 'sit'
+    | 'lie'
+    | 'sleep'
+    | 'swipe'
+    | 'walk'
+    | 'run'
+    | 'chase'
+    | 'jump'
+    | 'fall'
+    | 'land'
+    | 'climb'
+    | 'grab'
+    | 'bounce';
 
-  interface Fur {
-    base: string;
-    dark: string;
-    belly: string;
-    ear: string;
-  }
-
-  const FURS: Fur[] = [
-    { base: '#f2a65a', dark: '#c4701f', belly: '#fff1dc', ear: '#f7b7a3' },
-    { base: '#8d99ae', dark: '#5c677d', belly: '#edf2f4', ear: '#f4b6c2' },
-    { base: '#3d3d4a', dark: '#1f1f27', belly: '#6b6b7a', ear: '#e59aa8' },
-    { base: '#f5f0e6', dark: '#cdbfa6', belly: '#ffffff', ear: '#f7b7a3' },
-    { base: '#b5835a', dark: '#7a4e2b', belly: '#ead7c0', ear: '#f2a6a6' },
-    { base: '#c9b7e8', dark: '#9578c9', belly: '#f3ecff', ear: '#f7b7d2' },
-    { base: '#9ad1a4', dark: '#5ea36d', belly: '#eefaf0', ear: '#f7b7a3' },
-    { base: '#f2d16b', dark: '#c9a032', belly: '#fff8dc', ear: '#f7b7a3' },
-    { base: '#7fb7e6', dark: '#4a86b8', belly: '#eaf5ff', ear: '#f4b6c2' },
-    { base: '#e5877f', dark: '#b3544d', belly: '#fde3df', ear: '#f9c0b8' }
-  ];
-
-  interface Cat {
-    el: HTMLDivElement;
-    svg: SVGSVGElement;
-    w: number;
-    h: number;
-    scale: number;
+  interface Ball {
+    el: HTMLCanvasElement;
+    ctx: CanvasRenderingContext2D;
     x: number;
     y: number;
     vx: number;
     vy: number;
-    speed: number;
-    mode: Mode;
-    timeLeft: number;
-    modeDuration: number;
-    hop: number;
-    hopHeight: number;
-    rot: number;
-    rotSpeed: number;
-    dir: 1 | -1;
-    target: Cat | undefined;
+    roll: number;
+    phase: number;
+    color: number;
   }
+
+  interface Cat {
+    el: HTMLCanvasElement;
+    ctx: CanvasRenderingContext2D;
+    frameKey: string;
+    coat: number;
+    /** Left / top of the sprite box in px. */
+    x: number;
+    y: number;
+    vx: number;
+    vy: number;
+    /** 1 = facing right, -1 = facing left. */
+    dir: 1 | -1;
+    state: State;
+    timer: number;
+    animTime: number;
+    /** Wall being climbed: 1 = right, -1 = left. */
+    wall: 1 | -1;
+    climbTop: number;
+    climbDown: boolean;
+    bouncer: boolean;
+    ball: Ball | undefined;
+  }
+
+  const FLOOR_STATES: Array<[State, number]> = [
+    ['idle', 7],
+    ['sit', 12],
+    ['lie', 9],
+    ['sleep', 7],
+    ['swipe', 8],
+    ['walk', 16],
+    ['run', 10],
+    ['jump', 9],
+    ['chase', 10]
+  ];
 
   function rand(min: number, max: number): number {
     return min + Math.random() * (max - min);
@@ -58,132 +77,401 @@ declare function acquireVsCodeApi(): { postMessage(message: unknown): void };
     return Math.min(max, Math.max(min, v));
   }
 
-  function catSvg(fur: Fur, w: number, h: number): string {
-    const { base, dark, belly, ear } = fur;
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${SVG_W} ${SVG_H}">
-  <ellipse cx="68" cy="102" rx="46" ry="5" fill="rgba(0,0,0,0.12)"/>
-  <path class="tail" d="M30 72 C 6 72, 4 38, 20 28" fill="none" stroke="${base}" stroke-width="10" stroke-linecap="round"/>
-  <rect class="leg leg-b1" x="38" y="78" width="12" height="24" rx="6" fill="${dark}"/>
-  <rect class="leg leg-f1" x="78" y="78" width="12" height="24" rx="6" fill="${dark}"/>
-  <ellipse cx="62" cy="68" rx="40" ry="23" fill="${base}"/>
-  <ellipse cx="64" cy="78" rx="28" ry="11" fill="${belly}"/>
-  <path d="M42 48 q4 8 0 14 M54 46 q4 9 0 16 M66 46 q4 9 0 16" fill="none" stroke="${dark}" stroke-width="4" stroke-linecap="round" opacity="0.8"/>
-  <rect class="leg leg-b2" x="50" y="80" width="12" height="24" rx="6" fill="${base}"/>
-  <rect class="leg leg-f2" x="90" y="80" width="12" height="24" rx="6" fill="${base}"/>
-  <g class="head">
-    <polygon points="86,38 90,12 104,30" fill="${base}"/>
-    <polygon points="90,34 92,19 100,30" fill="${ear}"/>
-    <polygon points="108,30 122,12 126,40" fill="${base}"/>
-    <polygon points="111,30 120,19 123,36" fill="${ear}"/>
-    <ellipse cx="106" cy="50" rx="23" ry="20" fill="${base}"/>
-    <ellipse cx="106" cy="58" rx="13" ry="9" fill="${belly}"/>
-    <g class="eye"><ellipse cx="97" cy="47" rx="5" ry="6" fill="#ffffff"/><ellipse cx="98.5" cy="48" rx="2.6" ry="4" fill="#1d1d1d"/></g>
-    <g class="eye"><ellipse cx="116" cy="47" rx="5" ry="6" fill="#ffffff"/><ellipse cx="117.5" cy="48" rx="2.6" ry="4" fill="#1d1d1d"/></g>
-    <polygon points="103,55 109,55 106,59" fill="#e8738a"/>
-    <path d="M106 59 q-3 4 -6 2 M106 59 q3 4 6 2" fill="none" stroke="#4a3a35" stroke-width="1.5" stroke-linecap="round"/>
-    <path d="M96 58 l-14 -3 M96 61 l-14 3 M117 58 l14 -3 M117 61 l14 3" fill="none" stroke="#4a3a35" stroke-width="1.2" stroke-linecap="round" opacity="0.7"/>
-  </g>
-</svg>`;
-  }
-
   const stage = document.getElementById('stage') as HTMLDivElement;
   const pauseButton = document.getElementById('pause') as HTMLButtonElement;
   const requested = parseInt(document.body.dataset.catCount ?? '8', 10);
   const catCount = clamp(Number.isFinite(requested) ? requested : 8, 1, 30);
 
+  const SIZE = CatArt.FRAME_SIZE;
+  const YARN_N = CatArt.YARN_SIZE + 2;
+
   let W = window.innerWidth;
   let H = window.innerHeight;
+  let scale = 4;
   const cats: Cat[] = [];
+  const frameCache = new Map<string, ImageData>();
 
-  function headingFor(cat: Cat, angle: number, speed: number): void {
-    cat.speed = speed;
-    cat.vx = Math.cos(angle) * speed;
-    cat.vy = Math.sin(angle) * speed;
+  function pickScale(): number {
+    return clamp(Math.floor(Math.min(W / 170, H / 115)), 4, 6);
   }
 
-  function pickMode(cat: Cat): void {
-    const r = Math.random();
-    cat.target = undefined;
-    cat.hop = 0;
-    cat.rot = 0;
-    cat.rotSpeed = 0;
-    let mode: Mode;
-    if (r < 0.28) mode = 'run';
-    else if (r < 0.48) mode = 'jump';
-    else if (r < 0.62) mode = 'roll';
-    else if (r < 0.74) mode = 'stretch';
-    else if (r < 0.86) mode = 'sit';
-    else mode = 'chase';
-    if (mode === 'chase' && cats.length < 2) mode = 'run';
-    cat.mode = mode;
+  // Physics, in px; speeds are multiples of the pixel scale so cats look the same at any size.
+  const gravity = (): number => 520 * scale;
+  const floorY = (): number => H - CatArt.FEET_ROWS * scale;
+  const minX = (): number => -CatArt.CONTENT_MIN_COL * scale;
+  const maxX = (): number => W - (CatArt.CONTENT_MAX_COL + 1) * scale;
 
-    switch (mode) {
-      case 'run':
-        headingFor(cat, rand(0, Math.PI * 2), rand(110, 240));
-        cat.modeDuration = rand(1.5, 4);
-        break;
-      case 'jump':
-        headingFor(cat, rand(0, Math.PI * 2), rand(100, 220));
-        cat.hopHeight = rand(70, 150);
-        cat.modeDuration = rand(0.7, 1.1) * Math.round(rand(1, 3));
-        break;
-      case 'roll': {
-        headingFor(cat, rand(0, Math.PI * 2), rand(90, 170));
-        const turns = Math.round(rand(1, 3));
-        cat.modeDuration = turns * rand(0.7, 1.0);
-        cat.rotSpeed = ((turns * 360) / cat.modeDuration) * (Math.random() < 0.5 ? 1 : -1);
-        break;
-      }
-      case 'stretch':
-        cat.vx = cat.vy = 0;
-        cat.modeDuration = rand(1.8, 3);
-        break;
+  function imageFor(coat: number, frame: string): ImageData {
+    const key = `${coat}|${frame}`;
+    let img = frameCache.get(key);
+    if (!img) {
+      const px = CatArt.frameRgba(coat, frame);
+      img = new ImageData(px.data, px.width, px.height);
+      frameCache.set(key, img);
+    }
+    return img;
+  }
+
+  function animFor(cat: Cat): import('../catArt').AnimName {
+    switch (cat.state) {
+      case 'idle':
+        return 'idle';
       case 'sit':
-        cat.vx = cat.vy = 0;
-        cat.modeDuration = rand(1.5, 3.5);
-        break;
-      case 'chase': {
-        const others = cats.filter((c) => c !== cat);
-        cat.target = others[Math.floor(Math.random() * others.length)];
-        cat.speed = rand(230, 300);
-        cat.modeDuration = rand(3, 6);
+        return 'sit';
+      case 'lie':
+        return 'lie';
+      case 'sleep':
+        return 'sleep';
+      case 'swipe':
+        return 'swipe';
+      case 'walk':
+        return 'walk';
+      case 'run':
+      case 'chase':
+        return 'run';
+      case 'land':
+        return 'land';
+      case 'climb':
+        return 'climb';
+      case 'grab':
+        return 'grab';
+      case 'fall':
+        return 'fall';
+      default:
+        return cat.vy < 0 ? 'jump' : 'fall';
+    }
+  }
+
+  function draw(cat: Cat): void {
+    const anim = CatArt.ANIMATIONS[animFor(cat)];
+    const count = anim.frames.length;
+    const raw = Math.floor(cat.animTime * anim.fps);
+    // Safe modulo: never negative (or NaN), whatever animTime is.
+    const idx = Number.isFinite(raw) ? ((raw % count) + count) % count : 0;
+    const name = anim.frames[idx];
+    const key = `${cat.coat}|${name}`;
+    if (key !== cat.frameKey) {
+      cat.frameKey = key;
+      cat.ctx.putImageData(imageFor(cat.coat, name), 0, 0);
+    }
+    cat.el.style.transform = `translate(${Math.round(cat.x)}px, ${Math.round(cat.y)}px) scaleX(${cat.dir})`;
+    cat.el.style.zIndex = String(Math.floor(cat.y + SIZE * scale));
+  }
+
+  function setState(cat: Cat, state: State): void {
+    cat.state = state;
+    cat.animTime = 0;
+  }
+
+  function dropBall(cat: Cat): void {
+    if (cat.ball) {
+      cat.ball.el.remove();
+      cat.ball = undefined;
+    }
+  }
+
+  function makeBall(cat: Cat): Ball {
+    const el = document.createElement('canvas');
+    el.className = 'ball';
+    el.width = YARN_N;
+    el.height = YARN_N;
+    el.style.width = `${YARN_N * scale}px`;
+    el.style.height = `${YARN_N * scale}px`;
+    stage.appendChild(el);
+    const ctx = el.getContext('2d') as CanvasRenderingContext2D;
+    const color = Math.floor(Math.random() * CatArt.YARN_COLORS.length);
+    const ahead = cat.x + (cat.dir === 1 ? SIZE * scale * 1.1 : -YARN_N * scale * 0.4);
+    return {
+      el,
+      ctx,
+      x: clamp(ahead + cat.dir * rand(20, 60) * scale, 0, W - YARN_N * scale),
+      y: H - YARN_N * scale,
+      vx: cat.dir * 30 * scale,
+      vy: 0,
+      roll: 0,
+      phase: -1,
+      color
+    };
+  }
+
+  function stepBall(b: Ball, dt: number): void {
+    b.vy += gravity() * dt;
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    const floor = H - YARN_N * scale;
+    if (b.y >= floor) {
+      b.y = floor;
+      b.vy = Math.abs(b.vy) > 25 * scale ? -b.vy * 0.45 : 0;
+      b.vx *= Math.max(0, 1 - 0.7 * dt);
+    }
+    const maxBx = W - YARN_N * scale;
+    if (b.x < 0) {
+      b.x = 0;
+      b.vx = Math.abs(b.vx) * 0.8;
+    } else if (b.x > maxBx) {
+      b.x = maxBx;
+      b.vx = -Math.abs(b.vx) * 0.8;
+    }
+    b.roll += b.vx * dt;
+    const phase = ((Math.floor(b.roll / (scale * 2.2)) % 4) + 4) % 4;
+    if (phase !== b.phase) {
+      b.phase = phase;
+      const px = CatArt.yarnRgba(b.color, phase);
+      b.ctx.putImageData(new ImageData(px.data, px.width, px.height), 0, 0);
+    }
+    b.el.style.transform = `translate(${Math.round(b.x)}px, ${Math.round(b.y)}px)`;
+    b.el.style.zIndex = String(Math.floor(b.y + YARN_N * scale));
+  }
+
+  function pickFloorState(cat: Cat): void {
+    dropBall(cat);
+    cat.vx = 0;
+    cat.vy = 0;
+    let total = 0;
+    for (const [, w] of FLOOR_STATES) total += w;
+    let r = Math.random() * total;
+    let next: State = 'idle';
+    for (const [s, w] of FLOOR_STATES) {
+      r -= w;
+      if (r <= 0) {
+        next = s;
         break;
       }
     }
-    cat.timeLeft = cat.modeDuration;
-    cat.el.className = 'cat ' + cat.mode;
+    if (next === 'sleep' && cat.state !== 'lie' && Math.random() < 0.7) {
+      next = 'lie';
+    }
+    beginFloorState(cat, next);
   }
 
-  function makeCat(index: number): Cat {
-    const fur = FURS[index % FURS.length];
-    const scale = rand(0.8, 1.25);
-    const w = SVG_W * scale;
-    const h = SVG_H * scale;
-    const el = document.createElement('div');
-    el.className = 'cat sit';
-    el.innerHTML = catSvg(fur, w, h);
+  function beginFloorState(cat: Cat, next: State): void {
+    cat.y = floorY();
+    setState(cat, next);
+    switch (next) {
+      case 'idle':
+        cat.timer = rand(2, 4.5);
+        break;
+      case 'sit':
+        cat.timer = rand(3, 6);
+        break;
+      case 'lie':
+        cat.timer = rand(3, 5);
+        break;
+      case 'sleep':
+        cat.timer = rand(6, 12);
+        break;
+      case 'swipe':
+        cat.timer = rand(1.6, 3);
+        break;
+      case 'walk':
+        cat.dir = Math.random() < 0.5 ? 1 : -1;
+        cat.vx = cat.dir * rand(12, 18) * scale;
+        cat.timer = rand(3, 7);
+        break;
+      case 'run':
+        cat.dir = Math.random() < 0.5 ? 1 : -1;
+        cat.vx = cat.dir * rand(38, 52) * scale;
+        cat.timer = rand(2, 4);
+        break;
+      case 'jump':
+        cat.vy = -Math.sqrt(2 * gravity() * rand(18, 34) * scale);
+        cat.vx = Math.random() < 0.65 ? cat.dir * rand(15, 45) * scale : 0;
+        cat.timer = 99;
+        break;
+      case 'chase':
+        cat.ball = makeBall(cat);
+        cat.timer = rand(6, 9);
+        break;
+      default:
+        cat.timer = 2;
+    }
+  }
+
+  function startClimb(cat: Cat, wall: 1 | -1): void {
+    cat.wall = wall;
+    cat.dir = wall;
+    cat.x = wall === 1 ? maxX() : minX();
+    cat.vx = 0;
+    cat.vy = -rand(20, 26) * scale;
+    cat.climbTop = floorY() * rand(0.2, 0.65);
+    cat.climbDown = false;
+    setState(cat, 'climb');
+    cat.timer = 99;
+  }
+
+  function startBounce(cat: Cat): void {
+    const maxH = Math.max(40, floorY() - 8);
+    const h = rand(0.3, 0.8) * maxH;
+    cat.y = Math.min(cat.y, floorY());
+    cat.vy = -Math.sqrt(2 * gravity() * h);
+    cat.vx = cat.dir * rand(30, 70) * scale;
+    setState(cat, 'bounce');
+  }
+
+  function stepCat(cat: Cat, dt: number): void {
+    cat.animTime += dt;
+    cat.timer -= dt;
+    const g = gravity();
+    const floor = floorY();
+
+    switch (cat.state) {
+      case 'idle':
+      case 'sit':
+      case 'lie':
+      case 'sleep':
+      case 'swipe':
+        if (cat.timer <= 0) {
+          if (cat.state === 'lie' && Math.random() < 0.55) {
+            beginFloorState(cat, 'sleep');
+          } else {
+            pickFloorState(cat);
+          }
+        }
+        break;
+      case 'walk':
+      case 'run':
+      case 'chase': {
+        if (cat.state === 'chase') {
+          const b = cat.ball;
+          if (!b) {
+            pickFloorState(cat);
+            break;
+          }
+          stepBall(b, dt);
+          const catMid = cat.x + (SIZE * scale) / 2;
+          const ballMid = b.x + (YARN_N * scale) / 2;
+          const diff = ballMid - catMid;
+          const speed = 40 * scale;
+          if (Math.abs(diff) > SIZE * scale * 0.18) {
+            cat.dir = diff >= 0 ? 1 : -1;
+          }
+          cat.vx = cat.dir * speed;
+          if (Math.abs(diff) < SIZE * scale * 0.3 && b.y > H - YARN_N * scale * 1.6) {
+            // Caught up: bat the ball onward.
+            b.vx = cat.dir * speed * rand(1.3, 2);
+            b.vy = -rand(20, 45) * scale;
+          }
+        }
+        cat.x += cat.vx * dt;
+        cat.y = floor;
+        if (cat.x <= minX() || cat.x >= maxX()) {
+          const wall: 1 | -1 = cat.x >= maxX() ? 1 : -1;
+          cat.x = clamp(cat.x, minX(), maxX());
+          if (cat.state !== 'chase' && Math.random() < 0.5) {
+            startClimb(cat, wall);
+          } else {
+            cat.dir = wall === 1 ? -1 : 1;
+            cat.vx = cat.dir * Math.abs(cat.vx);
+          }
+        } else if (cat.state !== 'chase') {
+          cat.dir = cat.vx >= 0 ? 1 : -1;
+        }
+        if (cat.timer <= 0) {
+          pickFloorState(cat);
+        }
+        break;
+      }
+      case 'jump':
+      case 'fall':
+      case 'bounce': {
+        cat.vy += g * dt;
+        cat.x += cat.vx * dt;
+        cat.y += cat.vy * dt;
+        if (cat.x < minX() || cat.x > maxX()) {
+          cat.x = clamp(cat.x, minX(), maxX());
+          cat.vx = -cat.vx;
+          if (cat.state === 'bounce' || Math.abs(cat.vx) > 1) {
+            cat.dir = cat.vx >= 0 ? 1 : -1;
+          }
+        }
+        if (Math.abs(cat.vx) > 1) {
+          cat.dir = cat.vx >= 0 ? 1 : -1;
+        }
+        if (cat.y >= floor && cat.vy > 0) {
+          cat.y = floor;
+          cat.vy = 0;
+          cat.vx = 0;
+          setState(cat, 'land');
+          cat.timer = cat.bouncer ? 0.12 : 0.28;
+        }
+        break;
+      }
+      case 'land':
+        if (cat.timer <= 0) {
+          if (cat.bouncer) {
+            startBounce(cat);
+          } else {
+            pickFloorState(cat);
+          }
+        }
+        break;
+      case 'climb': {
+        cat.y += cat.vy * dt;
+        if (!cat.climbDown && cat.y <= cat.climbTop) {
+          cat.y = cat.climbTop;
+          cat.vy = 0;
+          setState(cat, 'grab');
+          cat.timer = rand(1.6, 3.2);
+        } else if (cat.climbDown && cat.y >= floor) {
+          cat.y = floor;
+          pickFloorState(cat);
+        }
+        break;
+      }
+      case 'grab':
+        if (cat.timer <= 0) {
+          if (Math.random() < 0.5) {
+            cat.climbDown = true;
+            cat.vy = rand(20, 26) * scale;
+            setState(cat, 'climb');
+          } else {
+            // Let go and drop back down, away from the wall.
+            cat.vx = -cat.wall * rand(8, 20) * scale;
+            cat.vy = 0;
+            cat.dir = cat.vx >= 0 ? 1 : -1;
+            setState(cat, 'fall');
+          }
+        }
+        break;
+    }
+    draw(cat);
+  }
+
+  function makeCat(index: number, order: number[], bouncer: boolean): Cat {
+    const el = document.createElement('canvas');
+    el.className = 'cat';
+    el.width = SIZE;
+    el.height = SIZE;
+    el.style.width = `${SIZE * scale}px`;
+    el.style.height = `${SIZE * scale}px`;
     stage.appendChild(el);
     const cat: Cat = {
       el,
-      svg: el.querySelector('svg') as SVGSVGElement,
-      w,
-      h,
-      scale,
-      x: 0,
-      y: 0,
+      ctx: el.getContext('2d') as CanvasRenderingContext2D,
+      frameKey: '',
+      coat: order[index % order.length],
+      x: rand(minX(), Math.max(minX() + 1, maxX())),
+      y: floorY(),
       vx: 0,
       vy: 0,
-      speed: 0,
-      mode: 'sit',
-      timeLeft: 0,
-      modeDuration: 1,
-      hop: 0,
-      hopHeight: 0,
-      rot: 0,
-      rotSpeed: 0,
       dir: Math.random() < 0.5 ? 1 : -1,
-      target: undefined
+      state: 'idle',
+      timer: 0,
+      animTime: rand(0, 3),
+      wall: 1,
+      climbTop: 0,
+      climbDown: false,
+      bouncer,
+      ball: undefined
     };
+    if (bouncer) {
+      // Start mid-air at a random point of a bounce so the screen fills up straight away.
+      startBounce(cat);
+      cat.y = rand(0.1, 0.9) * floorY();
+      cat.vy = -rand(-300, 300) * scale * 0.4;
+    } else {
+      pickFloorState(cat);
+    }
     return cat;
   }
 
@@ -195,126 +483,110 @@ declare function acquireVsCodeApi(): { postMessage(message: unknown): void };
     return items;
   }
 
-  // Spread the cats over the whole panel using a jittered grid.
-  function placeCats(): void {
-    const cols = Math.max(1, Math.ceil(Math.sqrt((catCount * W) / Math.max(H, 1))));
-    const rows = Math.max(1, Math.ceil(catCount / cols));
-    const cells: Array<[number, number]> = [];
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) cells.push([c, r]);
-    }
-    shuffle(cells);
-    cats.forEach((cat, i) => {
-      const [c, r] = cells[i % cells.length];
-      const cellW = W / cols;
-      const cellH = H / rows;
-      cat.x = clamp(c * cellW + rand(0, Math.max(0, cellW - cat.w)), 0, Math.max(0, W - cat.w));
-      cat.y = clamp(r * cellH + rand(0, Math.max(0, cellH - cat.h)), 0, Math.max(0, H - cat.h));
-    });
-  }
+  // The first rAF timestamp can precede a performance.now() taken at load, so there is no "last"
+  // until the first frame, and dt is always clamped to [0, 0.05].
+  let last: number | undefined;
+  const failed = new WeakSet<Cat>();
 
-  function bounce(cat: Cat): void {
-    const maxX = Math.max(0, W - cat.w);
-    const maxY = Math.max(0, H - cat.h);
-    if (cat.x < 0) {
-      cat.x = 0;
-      cat.vx = Math.abs(cat.vx);
-    } else if (cat.x > maxX) {
-      cat.x = maxX;
-      cat.vx = -Math.abs(cat.vx);
-    }
-    if (cat.y < 0) {
-      cat.y = 0;
-      cat.vy = Math.abs(cat.vy);
-    } else if (cat.y > maxY) {
-      cat.y = maxY;
-      cat.vy = -Math.abs(cat.vy);
+  function recover(cat: Cat): void {
+    try {
+      dropBall(cat);
+      cat.state = 'idle';
+      cat.animTime = 0;
+      cat.timer = 1;
+      cat.vx = 0;
+      cat.vy = 0;
+      cat.y = floorY();
+      cat.x = clamp(cat.x, minX(), Math.max(minX(), maxX()));
+      cat.frameKey = '';
+    } catch {
+      // nothing more to do for this cat
     }
   }
 
-  function step(cat: Cat, dt: number): void {
-    cat.timeLeft -= dt;
-    const progress = clamp(1 - cat.timeLeft / cat.modeDuration, 0, 1);
-
-    if (cat.mode === 'chase') {
-      const t = cat.target;
-      if (t) {
-        const dx = t.x + t.w / 2 - (cat.x + cat.w / 2);
-        const dy = t.y + t.h / 2 - (cat.y + cat.h / 2);
-        const dist = Math.hypot(dx, dy) || 1;
-        cat.vx = (dx / dist) * cat.speed;
-        cat.vy = (dy / dist) * cat.speed;
-        if (dist < 60 * cat.scale) {
-          // Caught up: the other cat bolts away, the chaser tumbles.
-          if (t.mode !== 'chase') {
-            const away = Math.atan2(-dy, -dx);
-            t.mode = 'run';
-            t.el.className = 'cat run';
-            headingFor(t, away, rand(260, 340));
-            t.modeDuration = t.timeLeft = rand(1, 2);
-            t.hop = 0;
-            t.rot = 0;
-            t.rotSpeed = 0;
-          }
-          cat.timeLeft = 0;
+  function frame(now: number): void {
+    // Re-arm first: nothing below may ever stop the loop.
+    requestAnimationFrame(frame);
+    const raw = last === undefined || !Number.isFinite(now) ? 0 : (now - last) / 1000;
+    const dt = clamp(Number.isFinite(raw) ? raw : 0, 0, 0.05);
+    if (Number.isFinite(now)) {
+      last = now;
+    }
+    for (const cat of cats) {
+      try {
+        stepCat(cat, dt);
+      } catch (err) {
+        if (!failed.has(cat)) {
+          failed.add(cat);
+          console.error('Meowter: cat step failed', err);
         }
+        recover(cat);
       }
     }
-
-    cat.x += cat.vx * dt;
-    cat.y += cat.vy * dt;
-    bounce(cat);
-
-    if (Math.abs(cat.vx) > 8) cat.dir = cat.vx >= 0 ? 1 : -1;
-
-    let hop = 0;
-    let sx = 1;
-    let sy = 1;
-    if (cat.mode === 'jump') {
-      // One or more arcs over the mode duration.
-      const arcs = Math.max(1, Math.round(cat.modeDuration / 0.9));
-      hop = Math.abs(Math.sin(progress * Math.PI * arcs)) * cat.hopHeight;
-      sy = 1 + 0.08 * Math.sin(progress * Math.PI * arcs * 2);
-    } else if (cat.mode === 'roll') {
-      cat.rot += cat.rotSpeed * dt;
-    } else if (cat.mode === 'stretch') {
-      const k = Math.sin(progress * Math.PI);
-      sx = 1 + 0.25 * k;
-      sy = 1 - 0.12 * k;
-    } else if (cat.mode === 'sit') {
-      sy = 1 + 0.02 * Math.sin(progress * Math.PI * 6);
-    }
-
-    cat.hop = hop;
-    cat.el.style.transform = `translate(${cat.x.toFixed(1)}px, ${(cat.y - hop).toFixed(1)}px)`;
-    cat.el.style.zIndex = String(Math.floor(cat.y));
-    cat.svg.style.transform = `rotate(${cat.rot.toFixed(1)}deg) scale(${(cat.dir * sx).toFixed(3)}, ${sy.toFixed(3)})`;
-
-    if (cat.timeLeft <= 0) {
-      pickMode(cat);
-    }
-  }
-
-  let last = performance.now();
-  function frame(now: number): void {
-    const dt = Math.min(0.05, (now - last) / 1000);
-    last = now;
-    for (const cat of cats) step(cat, dt);
-    requestAnimationFrame(frame);
   }
 
   function onResize(): void {
     W = window.innerWidth;
     H = window.innerHeight;
+    const next = pickScale();
+    if (next !== scale) {
+      scale = next;
+      for (const cat of cats) {
+        cat.el.style.width = `${SIZE * scale}px`;
+        cat.el.style.height = `${SIZE * scale}px`;
+        if (cat.ball) {
+          cat.ball.el.style.width = `${YARN_N * scale}px`;
+          cat.ball.el.style.height = `${YARN_N * scale}px`;
+        }
+      }
+    }
     for (const cat of cats) {
-      cat.x = clamp(cat.x, 0, Math.max(0, W - cat.w));
-      cat.y = clamp(cat.y, 0, Math.max(0, H - cat.h));
+      try {
+        resnap(cat);
+      } catch (err) {
+        console.error('Meowter: cat resize failed', err);
+        recover(cat);
+      }
     }
   }
 
-  for (let i = 0; i < catCount; i++) cats.push(makeCat(i));
-  placeCats();
-  cats.forEach(pickMode);
+  /** Re-anchors a cat to the new floor / wall positions after a size change. */
+  function resnap(cat: Cat): void {
+    const floor = floorY();
+    cat.x = clamp(cat.x, minX(), Math.max(minX(), maxX()));
+    switch (cat.state) {
+      case 'climb':
+      case 'grab':
+        // Stay glued to the wall on the same side, and inside the new height.
+        cat.x = cat.wall === 1 ? maxX() : minX();
+        cat.climbTop = Math.min(cat.climbTop, floor);
+        cat.y = clamp(cat.y, Math.min(cat.climbTop, floor), floor);
+        break;
+      case 'jump':
+      case 'fall':
+      case 'bounce':
+        cat.y = Math.min(cat.y, floor);
+        break;
+      default:
+        // Standing on the floor (idle, sit, lie, sleep, swipe, walk, run, chase, land).
+        cat.y = floor;
+    }
+    if (cat.ball) {
+      cat.ball.x = clamp(cat.ball.x, 0, Math.max(0, W - YARN_N * scale));
+      cat.ball.y = H - YARN_N * scale;
+    }
+    draw(cat);
+  }
+
+  scale = pickScale();
+  const order = shuffle(Array.from({ length: CatArt.COATS.length }, (_, i) => i));
+  // About a quarter of the cats (at least one) bounce across the middle of the screen.
+  const bouncers = Math.max(1, Math.round(catCount / 4));
+  const bouncerIdx = new Set(shuffle(Array.from({ length: catCount }, (_, i) => i)).slice(0, bouncers));
+  for (let i = 0; i < catCount; i++) {
+    cats.push(makeCat(i, order, bouncerIdx.has(i)));
+  }
+  for (const cat of cats) draw(cat);
   window.addEventListener('resize', onResize);
   pauseButton.addEventListener('click', () => vscodeApi.postMessage({ type: 'pause' }));
   requestAnimationFrame(frame);

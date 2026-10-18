@@ -1,4 +1,6 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
 import { buildBreakHtml, makeNonce, PAUSE_BUTTON_TEXT } from '../../html';
 
 describe('buildBreakHtml', () => {
@@ -31,5 +33,23 @@ describe('buildBreakHtml', () => {
   });
   it('generates distinct nonces', () => {
     assert.notStrictEqual(makeNonce(), makeNonce());
+  });
+  it('has no background of its own', () => {
+    assert.ok(!/background/i.test(html.replace(/<link[^>]*>/g, '')));
+  });
+});
+
+describe('cats.css', () => {
+  const css = fs.readFileSync(path.resolve(__dirname, '../../../media/cats.css'), 'utf8');
+  it('lets the editor background show through', () => {
+    assert.ok(/html, body \{[^}]*background: transparent/.test(css));
+    assert.ok(!/gradient\(/.test(css), 'no page-wide gradient');
+    assert.ok(!/#stage \{[^}]*background/.test(css));
+  });
+  it('scales the pixel art with nearest-neighbour rendering', () => {
+    assert.ok(/\.cat,\s*\.ball \{[^}]*image-rendering: pixelated/.test(css));
+  });
+  it('keeps the pause button styled', () => {
+    assert.ok(css.includes('#pause'));
   });
 });

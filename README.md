@@ -1,6 +1,6 @@
 # Meowter
 
-A VS Code extension (also works in Cursor). After a configurable amount of active IDE use, a tab full of cartoon cats appears, jumping, running and playing. Click **I took a break ⏸** to dismiss them and restart the timer.
+A VS Code extension (also works in Cursor). After a configurable amount of active IDE use, a tab full of pixel-art cats appears: they walk, run, sit, nap, swipe, climb the walls, chase yarn balls and bounce across the screen. Click **I took a break ⏸** to dismiss them and restart the timer.
 
 - Time counts only while an IDE window is focused and you are active. It is shared across all windows of the same user profile (state is kept in a JSON file in the extension's global storage).
 - A status bar item shows the minutes left (`🐱 42m`, or `🐱 Break!`). Clicking it opens the setting for the break interval.

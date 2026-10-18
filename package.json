@@ -22,7 +22,7 @@
   ],
   "main": "./out/extension.js",
   "scripts": {
-    "compile": "tsc -p ./ && tsc -p ./tsconfig.webview.json",
+    "compile": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\" && tsc -p ./ && tsc -p ./tsconfig.webview.json && node scripts/bundle-webview.js",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile",
     "pretest:vscode": "npm run compile",

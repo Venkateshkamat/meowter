@@ -1,10 +1,10 @@
 {
   "compilerOptions": {
-    "module": "none",
+    "module": "commonjs",
     "target": "ES2020",
     "lib": ["ES2020", "DOM"],
-    "outDir": "out/webview",
-    "rootDir": "src/webview",
+    "outDir": "out/.webview",
+    "rootDir": "src",
     "strict": true,
     "skipLibCheck": true,
     "types": []

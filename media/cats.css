@@ -6,8 +6,12 @@ html, body {
   overflow: hidden;
 }
 
+/* No page background: the editor's own background shows through. */
+html, body {
+  background: transparent;
+}
+
 body {
-  background: radial-gradient(circle at 50% 30%, #fff7e6 0%, #ffe3b8 55%, #ffd29a 100%);
   font-family: var(--vscode-font-family, system-ui, sans-serif);
 }
 
@@ -25,10 +29,18 @@ body {
   will-change: transform;
 }
 
-.cat svg {
-  display: block;
-  overflow: visible;
-  transform-origin: 50% 50%;
+/* Pixel art: crisp nearest-neighbour scaling of small canvases. */
+.cat,
+.ball {
+  image-rendering: pixelated;
+}
+
+.ball {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  will-change: transform;
 }
 
 .overlay {
@@ -71,75 +83,4 @@ body {
 #pause:focus-visible {
   outline: 4px solid #1c7ed6;
   outline-offset: 3px;
-}
-
-/* ---- cat parts ---- */
-.cat .tail,
-.cat .leg,
-.cat .eye {
-  transform-box: view-box;
-}
-
-.cat .tail {
-  transform-origin: 30px 72px;
-  animation: tail-sway 1.6s ease-in-out infinite alternate;
-}
-
-.cat.sit .tail,
-.cat.stretch .tail {
-  animation: tail-wag 0.45s ease-in-out infinite alternate;
-}
-
-.cat .leg-b1 { transform-origin: 44px 80px; }
-.cat .leg-b2 { transform-origin: 52px 80px; }
-.cat .leg-f1 { transform-origin: 84px 80px; }
-.cat .leg-f2 { transform-origin: 92px 80px; }
-
-.cat.run .leg-b1, .cat.chase .leg-b1, .cat.jump .leg-b1 { animation: leg-a 0.3s ease-in-out infinite alternate; }
-.cat.run .leg-f2, .cat.chase .leg-f2, .cat.jump .leg-f2 { animation: leg-a 0.3s ease-in-out infinite alternate; }
-.cat.run .leg-b2, .cat.chase .leg-b2, .cat.jump .leg-b2 { animation: leg-b 0.3s ease-in-out infinite alternate; }
-.cat.run .leg-f1, .cat.chase .leg-f1, .cat.jump .leg-f1 { animation: leg-b 0.3s ease-in-out infinite alternate; }
-
-.cat.chase .leg-b1, .cat.chase .leg-f2 { animation-duration: 0.2s; }
-.cat.chase .leg-b2, .cat.chase .leg-f1 { animation-duration: 0.2s; }
-
-.cat.jump .tail { animation: tail-wag 0.25s ease-in-out infinite alternate; }
-
-.cat.stretch .leg-f1, .cat.stretch .leg-f2 {
-  animation: reach 1.2s ease-in-out infinite alternate;
-}
-
-.cat .eye {
-  transform-origin: 50% 50%;
-  animation: blink 4s infinite;
-}
-
-@keyframes tail-sway {
-  from { transform: rotate(-8deg); }
-  to { transform: rotate(10deg); }
-}
-
-@keyframes tail-wag {
-  from { transform: rotate(-28deg); }
-  to { transform: rotate(26deg); }
-}
-
-@keyframes leg-a {
-  from { transform: rotate(-38deg); }
-  to { transform: rotate(38deg); }
-}
-
-@keyframes leg-b {
-  from { transform: rotate(38deg); }
-  to { transform: rotate(-38deg); }
-}
-
-@keyframes reach {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(-24deg); }
-}
-
-@keyframes blink {
-  0%, 92%, 100% { transform: scaleY(1); }
-  96% { transform: scaleY(0.1); }
 }
