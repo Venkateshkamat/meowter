@@ -1,6 +1,21 @@
 import * as vscode from 'vscode';
 import { planScene, sceneDataUri } from './catScene';
-import { AnchorMode, catsPerEditor, computeLayout, computeLineHeight, Layout, overlayStyle } from './overlayLayout';
+import {
+  AnchorMode,
+  catsPerEditor,
+  columnFractions,
+  computeLayout,
+  computeLineHeight,
+  charWidthPx,
+  EditorLayoutNode,
+  holdPeak,
+  Layout,
+  overlayStyle,
+  widestColumns,
+  widestLinePx,
+  widthCapCss,
+  widthFractionFor
+} from './overlayLayout';
 
 export interface OverlayEditorState {
   uri: string;
@@ -11,6 +26,12 @@ export interface OverlayEditorState {
   heightPx: number;
   scale: number;
   cats: number;
+  /** Share of the editor area's width this editor's column has (drives the width cap). */
+  widthFraction: number;
+  /** Widest line of the document in px (tabs expanded, plus Monaco's scroll room), rounded up to a bucket. */
+  widestPx: number;
+  /** The CSS `width` applied to the overlay. */
+  widthCss: string;
 }
 
 export interface OverlayState {
@@ -29,6 +50,9 @@ interface Entry {
 }
 
 const REFRESH_DEBOUNCE_MS = 60;
+const DOC_DEBOUNCE_MS = 300;
+/** Upper bound of lines scanned for the widest one (keeps huge files cheap). */
+const MAX_SCANNED_LINES = 200000;
 
 /**
  * Draws animated pixel cats over every visible text editor using editor decorations.
@@ -47,6 +71,11 @@ export class CatOverlay implements vscode.Disposable {
   private created = 0;
   private disposedTypes = 0;
   private catCount: () => number = () => 1;
+  private fractions: number[] = [];
+  private readonly widest = new Map<string, { version: number; columns: number }>();
+  /** Widest-line width seen per document during this break; it never shrinks (Monaco's layer does not either). */
+  private readonly peaks = new Map<string, number>();
+  private docTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** Editors that can show cats: real editor tabs (not panel/output editors, not notebook cells). */
   static candidates(): vscode.TextEditor[] {
@@ -74,7 +103,16 @@ export class CatOverlay implements vscode.Disposable {
     if (!this.running) {
       this.running = true;
       this.listeners.push(
-        vscode.window.onDidChangeVisibleTextEditors(() => this.refresh()),
+        vscode.window.onDidChangeVisibleTextEditors(() => {
+          void this.updateGroupLayout();
+          this.refresh();
+        }),
+        vscode.window.tabGroups.onDidChangeTabGroups(() => void this.updateGroupLayout()),
+        vscode.workspace.onDidChangeTextDocument((e) => {
+          if (e.contentChanges.length > 0 && [...this.entries.keys()].some((ed) => ed.document === e.document)) {
+            this.scheduleDocRefresh();
+          }
+        }),
         vscode.window.onDidChangeTextEditorVisibleRanges(() => this.schedule()),
         vscode.workspace.onDidChangeConfiguration((e) => {
           if (e.affectsConfiguration('editor') || e.affectsConfiguration('meowter')) {
@@ -84,11 +122,36 @@ export class CatOverlay implements vscode.Disposable {
       );
     }
     this.refresh();
+    void this.updateGroupLayout();
+  }
+
+  /**
+   * Reads how the editor groups are laid out (the internal `vscode.getEditorLayout` command) to know each
+   * editor's share of the width; re-applies when that changed.
+   */
+  private async updateGroupLayout(): Promise<void> {
+    try {
+      const layout = await vscode.commands.executeCommand<EditorLayoutNode | undefined>('vscode.getEditorLayout');
+      const next = columnFractions(layout);
+      const changed = next.length !== this.fractions.length || next.some((f, i) => Math.abs(f - this.fractions[i]) > 0.005);
+      this.fractions = next;
+      if (changed && this.running) {
+        this.refresh();
+      }
+    } catch (err) {
+      console.error('Meowter: could not read the editor layout', err);
+    }
   }
 
   /** Removes every decoration. Idempotent. */
   stop(): void {
     this.running = false;
+    if (this.docTimer) {
+      clearTimeout(this.docTimer);
+      this.docTimer = undefined;
+    }
+    this.widest.clear();
+    this.peaks.clear();
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = undefined;
@@ -104,6 +167,17 @@ export class CatOverlay implements vscode.Disposable {
 
   dispose(): void {
     this.stop();
+  }
+
+  /** Typing can make a line wider than the editor: re-check the cap, debounced. */
+  private scheduleDocRefresh(): void {
+    if (!this.running || this.docTimer) {
+      return;
+    }
+    this.docTimer = setTimeout(() => {
+      this.docTimer = undefined;
+      this.refresh();
+    }, DOC_DEBOUNCE_MS);
   }
 
   private schedule(): void {
@@ -151,6 +225,27 @@ export class CatOverlay implements vscode.Disposable {
     return computeLineHeight(cfg.get<number>('fontSize', 14), cfg.get<number>('lineHeight', 0), process.platform === 'darwin');
   }
 
+  /** Widest line of the whole document in columns (Monaco's layer follows it, not just the visible lines). */
+  private widestColumnsOf(editor: vscode.TextEditor): number {
+    const doc = editor.document;
+    const key = doc.uri.toString();
+    const cached = this.widest.get(key);
+    if (cached && cached.version === doc.version) {
+      return cached.columns;
+    }
+    const tabSize = typeof editor.options.tabSize === 'number' ? editor.options.tabSize : 4;
+    const n = Math.min(doc.lineCount, MAX_SCANNED_LINES);
+    let columns = 0;
+    for (let i = 0; i < n; i++) {
+      const text = doc.lineAt(i).text;
+      if (text.length > columns || text.indexOf('\t') >= 0) {
+        columns = Math.max(columns, widestColumns([text], tabSize));
+      }
+    }
+    this.widest.set(key, { version: doc.version, columns });
+    return columns;
+  }
+
   private apply(editor: vscode.TextEditor, cats: number): void {
     const lh = this.lineHeightFor(editor);
     const layout: Layout | undefined = computeLayout(
@@ -160,7 +255,13 @@ export class CatOverlay implements vscode.Disposable {
     if (!layout) {
       return;
     }
-    const key = `${layout.scale}|${layout.heightPx}|${layout.anchor}|${cats}|${lh}`;
+    const fraction = Math.round(widthFractionFor(this.fractions, editor.viewColumn, CatOverlay.candidates().length) * 1000) / 1000;
+    const cfg = vscode.workspace.getConfiguration('editor', { uri: editor.document.uri, languageId: editor.document.languageId });
+    const charWidth = charWidthPx(cfg.get<number>('fontSize', 14), cfg.get<number>('letterSpacing', 0));
+    const docKey = editor.document.uri.toString();
+    const widestPx = holdPeak(this.peaks.get(docKey), widestLinePx(this.widestColumnsOf(editor), charWidth));
+    this.peaks.set(docKey, widestPx);
+    const key = `${layout.scale}|${layout.heightPx}|${layout.anchor}|${cats}|${lh}|${fraction}|${widestPx}`;
     let entry = this.entries.get(editor);
     if (entry && entry.key !== key) {
       this.disposeType(entry);
@@ -175,11 +276,14 @@ export class CatOverlay implements vscode.Disposable {
       rows: layout.rows,
       heightPx: layout.heightPx,
       scale: layout.scale,
-      cats
+      cats,
+      widthFraction: fraction,
+      widestPx,
+      widthCss: widthCapCss(fraction, widestPx)
     };
     if (!entry) {
       const plans = planScene({ scale: layout.scale, heightPx: layout.heightPx, cats, seed: (this.seed += 7919) });
-      const css = overlayStyle(layout, lh, sceneDataUri(plans, layout.scale));
+      const css = overlayStyle(layout, lh, sceneDataUri(plans, layout.scale), fraction, widestPx);
       const type = vscode.window.createTextEditorDecorationType({ isWholeLine: true, backgroundColor: css });
       this.created++;
       entry = { type, key, line: -1, state };

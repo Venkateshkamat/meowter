@@ -16,7 +16,7 @@ VS Code has no overlay API, so each editor gets one *whole-line* text decoration
 
 Limitations:
 
-- The box is as wide as Monaco's scroll width: the visible text area, or the widest line when a line is longer than the editor (a horizontal scrollbar exists then). In that case cats can walk into the part of the box beyond the visible edge until you scroll sideways. The extension API and CSS give no way to read the visible width exactly; word wrap, short lines and wide editors are exact.
+- Monaco makes the box as wide as the editor's scroll width: the visible text area, or the widest line of the document when a line is longer than the editor. The visible width itself cannot be read by extensions, so the extension measures the document's widest line (tabs expanded, font size and letter spacing taken into account) and the box is capped with an estimate only when that line is wider than the estimate. The estimate is the window width (`100vw`) minus a fixed allowance for the sidebars, times this editor's share of the editor area (from the group layout), minus the gutter and minimap. When no line is wider than the estimate the box is plain `100%`: exactly the text area, whatever the sidebar state. Typing a very long line switches to the cap (and deleting it switches back). The estimate leans small, but with unusual layouts (a hidden sidebar plus long lines, many panels) the cats may use less, or occasionally somewhat more, than the visible width.
 - Horizontal scrolling moves the cats with the text.
 - With word wrap, or a file shorter than the editor, the floor is the bottom of the visible text rather than the exact bottom of the editor.
 - At most 8 cats per editor and 16 in total are drawn (`meowter.catCount` still sets the number, up to those caps).

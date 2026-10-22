@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import type { MeowterTestApi } from '../../extension';
 import type { Notifier } from '../../notice';
+import { overlayWidthPx } from '../../overlayLayout';
 
 const EXT_ID = 'venkateshkamat.meowter';
 const NOTICE_MESSAGE = 'Time for a break 🐱';
@@ -21,21 +22,24 @@ interface OverlayMeasure {
   pos: string;
   z: string;
   hscroll: string[];
+  /** window.innerWidth, the CSS 100vw the width estimate is based on */
+  vw: number;
 }
 
 /**
- * The overlay is as wide as Monaco's scroll width: exactly the visible text area unless a line (or the editor's own
- * minimum content width) is wider than the editor, in which case a horizontal scrollbar exists and the extra width
- * is only reachable by scrolling sideways (a documented limitation: the visible width cannot be read by extensions).
- * In every other case the right wall must be the editor's visible right edge.
+ * The overlay is Monaco's scroll width (the visible text area when no line is wider than the editor), capped by the
+ * estimate of the visible width. Either way its right edge must not be beyond the editor's visible right edge, give
+ * or take a few pixels (the estimate errs on the small side).
  */
+/** The overlay must be Monaco's scroll width, capped to the estimate only when a line is wider than the estimate. */
+function assertWidthDecision(m: OverlayMeasure, fraction: number, widestPx: number): void {
+  const expected = overlayWidthPx(m.viewOverlaysW, widestPx, m.vw, fraction);
+  assert.ok(Math.abs(m.w - expected) <= 1.5, `overlay ${m.w}px should be ${expected}px (scroll width ${m.viewOverlaysW}px, widest line ${widestPx}px, window ${m.vw}px): ${JSON.stringify(m)}`);
+}
+
 function assertInsideEditor(m: OverlayMeasure): void {
   assert.ok(m.x >= m.editorX - 1, `starts at the editor's left edge: ${JSON.stringify(m)}`);
-  if (m.viewOverlaysW <= m.editorW + 1) {
-    assert.ok(m.x + m.w <= m.editorX + m.editorW + 1, `the right wall is the editor's visible right edge: ${JSON.stringify(m)}`);
-  } else {
-    console.log(`content is wider than the editor (${m.viewOverlaysW}px > ${m.editorW}px): overlay extends past the visible edge`);
-  }
+  assert.ok(m.x + m.w <= m.editorX + m.editorW + 10, `the right wall is (about) the editor's visible right edge: ${JSON.stringify(m)}`);
 }
 
 /**
@@ -54,7 +58,7 @@ async function measureOverlays(): Promise<OverlayMeasure[] | undefined> {
       const cs = getComputedStyle(e); const r = e.getBoundingClientRect();
       const ed = e.closest('.monaco-editor'); const sc = ed.querySelector('.monaco-scrollable-element.editor-scrollable');
       const er = sc.getBoundingClientRect(); const vo = e.closest('.view-overlays');
-      return { w: r.width, x: r.x, h: r.height, viewOverlaysW: vo.getBoundingClientRect().width, editorX: er.x, editorW: er.width,
+      return { vw: window.innerWidth, w: r.width, x: r.x, h: r.height, viewOverlaysW: vo.getBoundingClientRect().width, editorX: er.x, editorW: er.width,
         pe: cs.pointerEvents, pos: cs.position, z: cs.zIndex,
         hscroll: [...ed.querySelectorAll('.scrollbar.horizontal')].map((h) => h.className + '|' + getComputedStyle(h).visibility) };
     }))`;
@@ -103,10 +107,36 @@ function workspaceDir(): string {
   return folder.uri.fsPath;
 }
 
+/** Polls the real DOM until `count` overlays exist. Resolves undefined when DevTools is not available. */
+async function waitForMeasures(count: number): Promise<OverlayMeasure[] | undefined> {
+  const start = Date.now();
+  for (;;) {
+    const measures = await measureOverlays();
+    if (measures === undefined) {
+      console.log('DevTools endpoint not available; skipping the DOM measurement');
+      return undefined;
+    }
+    if (measures.length >= count || Date.now() - start > 15000) {
+      return measures;
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}
+
 /** Opens a file whose lines are SHORT, the case where an inline overlay would only be as wide as the text. */
 async function openShortLines(name: string, lineCount: number, viewColumn: vscode.ViewColumn = vscode.ViewColumn.One): Promise<vscode.TextEditor> {
   const file = path.join(workspaceDir(), name);
   fs.writeFileSync(file, Array.from({ length: lineCount }, (_, i) => `a${i}`).join('\n'));
+  const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
+  const editor = await vscode.window.showTextDocument(doc, { viewColumn, preview: false });
+  await waitFor(() => editor.visibleRanges.length > 0, `visible ranges of ${name}`);
+  return editor;
+}
+
+/** Opens a file whose lines are about 120 characters long, wider than a split editor. */
+async function openLongLines(name: string, lineCount: number, viewColumn: vscode.ViewColumn = vscode.ViewColumn.One): Promise<vscode.TextEditor> {
+  const file = path.join(workspaceDir(), name);
+  fs.writeFileSync(file, Array.from({ length: lineCount }, (_, i) => `const long${i} = compute(${i}); // ${'x'.repeat(90)}`).join('\n'));
   const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
   const editor = await vscode.window.showTextDocument(doc, { viewColumn, preview: false });
   await waitFor(() => editor.visibleRanges.length > 0, `visible ranges of ${name}`);
@@ -443,8 +473,11 @@ suite('Meowter extension', () => {
       assert.strictEqual(measures.length, 1, 'one overlay in the one visible editor');
       const m = measures[0];
       assert.ok(m.editorW > 200, `editor width ${m.editorW}`);
-      assert.ok(Math.abs(m.w - m.viewOverlaysW) <= 1, `overlay ${m.w}px vs the editor's visible text area ${m.viewOverlaysW}px`);
-      assert.ok(m.w >= m.editorW * 0.5, `overlay ${m.w}px is most of the editor (${m.editorW}px), not just the text`);
+      // Short lines: Monaco's width is the text area, and the estimate only caps it if it is smaller.
+      const info = api.getOverlayState().editors[0];
+      assert.strictEqual(info.widthFraction, 1, 'one column');
+      assertWidthDecision(m, info.widthFraction, info.widestPx);
+      assert.ok(Math.abs(m.w - m.viewOverlaysW) <= 1.5, `short lines: no cap, the overlay is the whole text area (${m.w}px vs ${m.viewOverlaysW}px)`);
       assertInsideEditor(m);
       assert.ok(m.h >= 14 * 8, `overlay height ${m.h}`);
       assert.strictEqual(m.pe, 'none', 'click-through');
@@ -472,12 +505,153 @@ suite('Meowter extension', () => {
         }
       } while (measures.length < 2 && Date.now() - start < 15000);
       assert.strictEqual(measures.length, 2);
+      const widest = api.getOverlayState().editors[0].widestPx;
       for (const m of measures) {
-        assert.ok(Math.abs(m.w - m.viewOverlaysW) <= 1, `overlay ${m.w}px vs text area ${m.viewOverlaysW}px`);
-        assertInsideEditor(m);
-        assert.ok(m.w >= m.editorW * 0.5);
+        assertWidthDecision(m, 0.5, widest);
+        if (m.viewOverlaysW <= m.editorW + 1) {
+          assertInsideEditor(m);
+        } else {
+          console.log(`short lines but the editor's own layer is wider than it (${m.viewOverlaysW}px > ${m.editorW}px): no cap applies`);
+        }
       }
       assert.notStrictEqual(Math.round(measures[0].x), Math.round(measures[1].x), 'two different editors');
+    });
+
+    test('in a narrow split with long lines the overlay is capped to about the visible width (real DOM)', async function () {
+      // 120-character lines: wider than a split editor, so Monaco's scroll width exceeds the visible width.
+      await openLongLines('meowter-test-a.ts', 90);
+      await openLongLines('meowter-test-b.ts', 90, vscode.ViewColumn.Beside);
+      await api.startBreakNow();
+      await waitFor(() => api.getOverlayState().editors.length === 2, 'both editors decorated');
+      await waitFor(() => api.getOverlayState().editors.every((e) => Math.abs(e.widthFraction - 0.5) < 0.05), 'each editor knows it has half the width');
+      let measures: OverlayMeasure[] | undefined;
+      const start = Date.now();
+      do {
+        measures = await measureOverlays();
+        if (measures === undefined) {
+          return this.skip();
+        }
+        if (measures.length < 2) {
+          await new Promise((r) => setTimeout(r, 300));
+        }
+      } while (measures.length < 2 && Date.now() - start < 15000);
+      assert.strictEqual(measures.length, 2);
+      for (const m of measures) {
+        console.log(`narrow split, long lines: scroll width ${Math.round(m.viewOverlaysW)}px, overlay ${Math.round(m.w)}px, visible editor ${Math.round(m.editorW)}px, window ${m.vw}px`);
+        assertWidthDecision(m, 0.5, api.getOverlayState().editors[0].widestPx);
+        assert.ok(api.getOverlayState().editors[0].widestPx > 600, 'the document has long lines');
+        assert.ok(m.w <= m.editorW + 10, `the overlay (${m.w}px) stays within the visible editor width (${m.editorW}px)`);
+      }
+    });
+
+    test('short lines with the sidebar hidden: the overlay is the whole text area, not an estimate (real DOM)', async function () {
+      await vscode.commands.executeCommand('workbench.action.closeSidebar');
+      try {
+        await openShortLines('meowter-test-short.ts', 120);
+        await api.startBreakNow();
+        const measures = await waitForMeasures(1);
+        if (!measures) {
+          return this.skip();
+        }
+        const m = measures[0];
+        const info = api.getOverlayState().editors[0];
+        assert.ok(info.widestPx <= 200, `short lines (${info.widestPx}px)`);
+        assert.ok(Math.abs(m.w - m.viewOverlaysW) <= 1.5, `overlay ${m.w}px must equal the text area ${m.viewOverlaysW}px, whatever the sidebar state`);
+        assertWidthDecision(m, 1, info.widestPx);
+        console.log(`sidebar hidden, short lines: overlay ${Math.round(m.w)}px, text area ${Math.round(m.viewOverlaysW)}px, window ${m.vw}px`);
+      } finally {
+        await vscode.commands.executeCommand('workbench.view.explorer');
+      }
+    });
+
+    test('typing a very long line mid-break switches the overlay to the cap (real DOM)', async function () {
+      const editor = await openShortLines('meowter-test-short.ts', 60);
+      await api.startBreakNow();
+      let measures = await waitForMeasures(1);
+      if (!measures) {
+        return this.skip();
+      }
+      const before = measures[0];
+      assert.ok(Math.abs(before.w - before.viewOverlaysW) <= 1.5, 'short lines: the whole layer');
+      const widestBefore = api.getOverlayState().editors[0].widestPx;
+      try {
+        await editor.edit((b) => b.insert(new vscode.Position(0, 2), 'x'.repeat(500)));
+        await waitFor(() => api.getOverlayState().editors[0]?.widestPx > widestBefore + 2000, 'the overlay noticed the long line');
+        // The decoration is replaced, so wait for the capped width to show up in the DOM.
+        const start = Date.now();
+        let after: OverlayMeasure | undefined;
+        do {
+          measures = await measureOverlays();
+          after = measures?.[0];
+          if (!after || Math.abs(after.w - after.viewOverlaysW) <= 1.5) {
+            await new Promise((r) => setTimeout(r, 300));
+          }
+        } while ((!after || Math.abs(after.w - after.viewOverlaysW) <= 1.5) && Date.now() - start < 15000);
+        assert.ok(after, 'overlay still present');
+        const info = api.getOverlayState().editors[0];
+        assertWidthDecision(after, 1, info.widestPx);
+        assert.ok(after.w < after.viewOverlaysW, `capped (${after.w}px) below Monaco's layer (${after.viewOverlaysW}px)`);
+        // The estimate errs small for ordinary layouts; a window crowded by other panels (Cursor's agent
+        // panel in a small test window) can leave the editor narrower than any estimate can know.
+        if (overlayWidthPx(1e9, 1e9, after.vw, 1) <= after.editorW + 10) {
+          assert.ok(after.w <= after.editorW + 10, `within the visible editor (${after.editorW}px)`);
+        } else {
+          console.log(`the editor (${after.editorW}px) is narrower than the estimate (${Math.round(after.w)}px): crowded window`);
+        }
+        console.log(`before typing: overlay ${Math.round(before.w)}px; after a 500-character line: overlay ${Math.round(after.w)}px of a ${Math.round(after.viewOverlaysW)}px layer, visible editor ${Math.round(after.editorW)}px`);
+      } finally {
+        await vscode.commands.executeCommand('workbench.action.files.revert');
+      }
+      // Reverting removes the long line, but Monaco's layer stays wide, so the cap is held for the rest of the break.
+      await new Promise((r) => setTimeout(r, 1200));
+      assert.ok(api.getOverlayState().editors[0].widestPx > widestBefore + 2000, 'the peak is held after the line is gone');
+      // A new break starts fresh.
+      await api.pause();
+      await api.startBreakNow();
+      await waitFor(() => api.getOverlayState().editors.length === 1, 'decorated again');
+      assert.ok(api.getOverlayState().editors[0].widestPx <= widestBefore, 'the peak was reset when the break ended');
+    });
+
+    test('typing a long line and undoing it keeps the cap: the layer never shrinks (real DOM)', async function () {
+      const editor = await openShortLines('meowter-test-short.ts', 60);
+      await api.startBreakNow();
+      const measures = await waitForMeasures(1);
+      if (!measures) {
+        return this.skip();
+      }
+      const widestBefore = api.getOverlayState().editors[0].widestPx;
+      try {
+        await editor.edit((b) => b.insert(new vscode.Position(0, 2), 'x'.repeat(500)));
+        await waitFor(() => api.getOverlayState().editors[0]?.widestPx > widestBefore + 2000, 'the overlay noticed the long line');
+        await vscode.commands.executeCommand('undo');
+        await waitFor(() => !editor.document.getText().includes('xxxxxxxxxx'), 'the long line is undone');
+        // Give the debounced re-check time to run, then look at what the browser really did.
+        await new Promise((r) => setTimeout(r, 1500));
+        const info = api.getOverlayState().editors[0];
+        assert.ok(info.widestPx > widestBefore + 2000, 'the peak is held, so the cap stays');
+        const after = (await measureOverlays())?.[0];
+        assert.ok(after, 'overlay still present');
+        assertWidthDecision(after, 1, info.widestPx);
+        if (after.viewOverlaysW > after.editorW * 2) {
+          // The case this test is about: Monaco keeps the wide layer, the overlay must stay capped.
+          assert.ok(after.w < after.viewOverlaysW, `still capped (${after.w}px), not the stale layer`);
+        } else {
+          console.log(`this editor shrank its layer back to ${Math.round(after.viewOverlaysW)}px after the undo`);
+        }
+        if (overlayWidthPx(1e9, 1e9, after.vw, 1) <= after.editorW + 10) {
+          assert.ok(after.w <= after.editorW + 10, `within the visible editor (${after.editorW}px)`);
+        } else {
+          console.log(`the editor (${after.editorW}px) is narrower than the estimate: crowded window`);
+        }
+        console.log(`after typing and undoing a long line: overlay ${Math.round(after.w)}px, layer ${Math.round(after.viewOverlaysW)}px, visible editor ${Math.round(after.editorW)}px`);
+        // Scrolling does not bring the stale width back either.
+        editor.revealRange(new vscode.Range(50, 0, 50, 0), vscode.TextEditorRevealType.AtTop);
+        await new Promise((r) => setTimeout(r, 1000));
+        const scrolled = (await measureOverlays())?.[0];
+        assert.ok(scrolled && Math.abs(scrolled.w - after.w) <= 1.5, 'unchanged after scrolling');
+      } finally {
+        await vscode.commands.executeCommand('workbench.action.files.revert');
+      }
     });
 
     test('during a break the status bar is the pause button; outside one it is the countdown', async () => {
