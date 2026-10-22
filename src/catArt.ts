@@ -845,28 +845,132 @@ export function buildCatSvg(o: CatSvgOptions): string {
   const anim = ANIMATIONS[o.anim];
   const scale = o.scale ?? 4;
   const size = FRAME_SIZE * scale;
-  const n = anim.frames.length;
-  const dur = n / anim.fps;
-  const times = anim.frames.map((_, i) => String(Math.round((i / n) * 10000) / 10000)).join(';');
-  const groups = anim.frames
-    .map((name, i) => {
-      const paths = gridPaths(frameGrid(name), (ch) => colorFor(coat, ch));
-      if (n === 1) {
-        return `<g>${paths}</g>`;
-      }
-      const values = anim.frames.map((_, j) => (j === i ? 'visible' : 'hidden')).join(';');
-      return (
-        `<g visibility="${i === 0 ? 'visible' : 'hidden'}">${paths}` +
-        `<animate attributeName="visibility" calcMode="discrete" values="${values}" keyTimes="${times}" dur="${dur}s" repeatCount="indefinite"/></g>`
-      );
-    })
-    .join('');
+  const groups = frameGroups(anim.frames, anim.fps, (name) => gridPaths(frameGrid(name), (ch) => colorFor(coat, ch)));
   const inner = o.flip ? `<g transform="translate(${FRAME_SIZE} 0) scale(-1 1)">${groups}</g>` : groups;
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${FRAME_SIZE} ${FRAME_SIZE}" shape-rendering="crispEdges">` +
     inner +
     `</svg>`
   );
+}
+
+/**
+ * One <g> per DISTINCT frame, switched with SMIL discrete `visibility` animation following the
+ * frame sequence (repeated frames in a sequence share one group). A single frame needs no animation.
+ */
+function frameGroups(frames: readonly string[], fps: number, paint: (frame: string) => string): string {
+  const n = frames.length;
+  const dur = Math.round((n / fps) * 10000) / 10000;
+  const times = frames.map((_, i) => String(Math.round((i / n) * 10000) / 10000)).join(';');
+  const distinct = [...new Set(frames)];
+  return distinct
+    .map((name) => {
+      const paths = paint(name);
+      if (distinct.length === 1) {
+        return `<g>${paths}</g>`;
+      }
+      const values = frames.map((f) => (f === name ? 'visible' : 'hidden')).join(';');
+      return (
+        `<g visibility="${frames[0] === name ? 'visible' : 'hidden'}">${paths}` +
+        `<animate attributeName="visibility" calcMode="discrete" values="${values}" keyTimes="${times}" dur="${dur}s" repeatCount="indefinite"/></g>`
+      );
+    })
+    .join('');
+}
+
+// ---------------------------------------------------------------------------------------------
+// Building blocks for scenes (many cats in one SVG, see catScene.ts)
+// ---------------------------------------------------------------------------------------------
+
+/** Characters that get a CSS variable / class in scene sprites (everything except transparent). */
+const SCENE_CHARS = PALETTE_CHARS.replace('.', '');
+
+/**
+ * Animation clock of scenes: every scene frame rate divides it, so all changes of a scene happen on the same
+ * ticks and the overlay repaints at most this many times per second (8 suits pixel art and is cheap).
+ */
+export const SCENE_TICK_HZ = 8;
+
+/** Frame rates of the animations when played in a scene (each divides SCENE_TICK_HZ). */
+export const SCENE_FPS: Readonly<Record<AnimName, number>> = {
+  idle: 4,
+  sit: 4,
+  lie: 2,
+  sleep: 2,
+  swipe: 4,
+  walk: 4,
+  run: 8,
+  jump: 1,
+  fall: 1,
+  land: 1,
+  climb: 4,
+  grab: 4
+};
+
+/** `<style>` that paints classed sprite pixels from per-instance CSS variables (--b, --d, ..., --yr for yarn). */
+export function sceneStyle(): string {
+  const cat = [...SCENE_CHARS].map((c) => `.c${c}{fill:var(--${c})}`);
+  const yarn = ['r', 'q', 's', 'o'].map((c) => `.y${c}{fill:var(--y${c})}`);
+  return `<style>${cat.join('')}${yarn.join('')}</style>`;
+}
+
+/** Inline style declaring the CSS variables of a coat (set it on any ancestor of a sprite `<use>`). */
+export function coatVars(coat: Coat | string | number): string {
+  const c = resolveCoat(coat);
+  return [...SCENE_CHARS]
+    .map((ch) => {
+      const col = colorFor(c, ch);
+      return col ? `--${ch}:${col}` : '';
+    })
+    .filter(Boolean)
+    .join(';');
+}
+
+/** Inline style declaring the CSS variables of a yarn ball colour (`--yr`, `--yq`, `--ys`, `--yo`). */
+export function yarnVars(colorIndex: number): string {
+  return ['r', 'q', 's', 'o'].map((ch) => `--y${ch}:${yarnColorFor(colorIndex, ch)}`).join(';');
+}
+
+/** Pixel runs as one path per palette character, painted by the `.<prefix><char>` classes. */
+function classedPaths(grid: readonly string[], prefix: string): string {
+  const byChar = new Map<string, string[]>();
+  for (let y = 0; y < grid.length; y++) {
+    let x = 0;
+    while (x < grid[y].length) {
+      const ch = grid[y][x];
+      if (ch === '.') {
+        x++;
+        continue;
+      }
+      let end = x + 1;
+      while (end < grid[y].length && grid[y][end] === ch) end++;
+      const list = byChar.get(ch) ?? [];
+      list.push(`M${x} ${y}h${end - x}v1h-${end - x}z`);
+      byChar.set(ch, list);
+      x = end;
+    }
+  }
+  return [...byChar.entries()].map(([ch, runs]) => `<path class="${prefix}${ch}" d="${runs.join('')}"/>`).join('');
+}
+
+/** Cells of a scene's sprite strip: every frame, plus `chase0..3` (running with a yarn ball in front). */
+export const CHASE_CELLS: readonly string[] = ['chase0', 'chase1', 'chase2', 'chase3'];
+
+export function isCell(name: string): boolean {
+  return CHASE_CELLS.includes(name) || frameNames().includes(name);
+}
+
+/**
+ * The art of one strip cell (a FRAME_SIZE square), painted by the `.c<char>` / `.y<char>` classes. Recolour it by
+ * setting coatVars()/yarnVars() on an ancestor of the `<use>` that instances it.
+ */
+export function cellMarkup(cell: string): string {
+  const k = CHASE_CELLS.indexOf(cell);
+  if (k < 0) {
+    return classedPaths(frameGrid(cell), 'c');
+  }
+  const ball = `<g transform="translate(${CONTENT_MAX_COL + 3} ${FEET_ROWS - YARN_SIZE - 2})">${classedPaths(yarnFrameGrid(k), 'y')}</g>`;
+  return classedPaths(frameGrid(`run${k}`), 'c') + ball;
 }
 
 export interface YarnSvgOptions {

@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { ActivityTracker } from './activity';
 import { BreakPanel, WebviewReport } from './breakPanel';
+import { CatOverlay, OverlayState } from './catOverlay';
+import { Notifier, NOTICE_BUTTON, NOTICE_MESSAGE, shouldPauseForNotice } from './notice';
 import { SharedStateStore } from './sharedState';
 import {
   applyBreakNow,
@@ -31,7 +33,27 @@ export interface MeowterTestApi {
   getStatusBarText(): string;
   getBreakPanelForTest(): vscode.WebviewPanel | undefined;
   getWebviewReport(): WebviewReport;
+  /** Decorations currently drawn over the visible editors. */
+  getOverlayState(): OverlayState;
+  /** Replaces the break notification UI (tests); pass undefined to restore the real one. */
+  setNotifier(notifier: Notifier | undefined): void;
+  /** How this window shows the current break: cats over the editors, or the fallback cat tab. */
+  getBreakMode(): 'overlay' | 'tab' | undefined;
+  /** Command run when the status bar item is clicked (the pause command during a break, else the settings). */
+  getStatusBarCommand(): string | undefined;
+  getStatusBarTooltip(): string;
 }
+
+export const PAUSE_COMMAND = 'meowter.pause';
+const SETTINGS_COMMAND = {
+  title: 'Meowter settings',
+  command: 'workbench.action.openSettings',
+  arguments: ['meowter.breakIntervalMinutes']
+};
+
+const vscodeNotifier: Notifier = {
+  show: (message, ...buttons) => vscode.window.showInformationMessage(message, ...buttons)
+};
 
 interface Settings {
   intervalMs: number;
@@ -53,12 +75,13 @@ export function activate(context: vscode.ExtensionContext): MeowterTestApi {
   const store = new SharedStateStore(context.globalStorageUri.fsPath);
   const activity = new ActivityTracker();
   const breakPanel = new BreakPanel(context.extensionUri);
+  const overlay = new CatOverlay();
+  let notifier: Notifier = vscodeNotifier;
+  let breakMode: 'overlay' | 'tab' | undefined;
+  let noticedBreakId: number | undefined;
+  let noEditorTimer: ReturnType<typeof setTimeout> | undefined;
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusBar.command = {
-    title: 'Meowter settings',
-    command: 'workbench.action.openSettings',
-    arguments: ['meowter.breakIntervalMinutes']
-  };
+  statusBar.command = SETTINGS_COMMAND;
 
   let lastTickAt: number | undefined;
   let lastState: SharedState = store.read();
@@ -76,10 +99,37 @@ export function activate(context: vscode.ExtensionContext): MeowterTestApi {
   const updateStatusBar = (state: SharedState): void => {
     const { intervalMs } = readSettings();
     statusBar.text = formatStatusText(state, intervalMs);
-    statusBar.tooltip = state.breakActive
-      ? 'Meowter: time for a break! Click the button in the cat tab to resume.'
-      : `Meowter: ${remainingMinutes(state.activeMs, intervalMs)} min of active IDE use until your next break. ` +
+    if (state.breakActive) {
+      // During a break the item is a pause button too: notifications auto-hide, the status bar stays.
+      statusBar.command = { title: NOTICE_BUTTON, command: PAUSE_COMMAND };
+      statusBar.tooltip = `Meowter: time for a break! Click "${NOTICE_BUTTON}" to send the cats away and restart the timer.`;
+    } else {
+      statusBar.command = SETTINGS_COMMAND;
+      statusBar.tooltip =
+        `Meowter: ${remainingMinutes(state.activeMs, intervalMs)} min of active IDE use until your next break. ` +
         'Click to change the break interval.';
+    }
+  };
+
+  // The break notification is the pause control. Its result (button or dismissal) pauses, but only
+  // while the break it was shown for is still the current one: a stale notification is ignored.
+  const showNotice = (breakId: number): void => {
+    if (noticedBreakId === breakId) {
+      return;
+    }
+    noticedBreakId = breakId;
+    const onResult = (): void => {
+      if (shouldPauseForNotice(breakId, store.read())) {
+        void pause();
+      }
+    };
+    try {
+      Promise.resolve(notifier.show(NOTICE_MESSAGE, NOTICE_BUTTON)).then(onResult, (err) =>
+        console.error('Meowter: break notification failed', err)
+      );
+    } catch (err) {
+      console.error('Meowter: break notification failed', err);
+    }
   };
 
   // Brings this window's UI in line with the shared file.
@@ -87,10 +137,28 @@ export function activate(context: vscode.ExtensionContext): MeowterTestApi {
     const state = store.read();
     lastState = state;
     updateStatusBar(state);
-    if (state.breakActive && !breakPanel.isOpen) {
-      await breakPanel.show(readSettings().catCount);
-    } else if (!state.breakActive && breakPanel.isOpen) {
-      await breakPanel.close();
+    if (state.breakActive) {
+      showNotice(state.breakId);
+      if (!breakMode) {
+        // Cats over the visible editors, or the cat tab when none is visible.
+        breakMode = CatOverlay.candidates().length > 0 ? 'overlay' : 'tab';
+      } else if (breakMode === 'overlay' && CatOverlay.candidates().length === 0) {
+        // Every text editor was closed during the break: nothing is left to draw on, so use the cat tab.
+        // It stays even if an editor becomes visible again (no flip-flopping between the two surfaces).
+        overlay.stop();
+        breakMode = 'tab';
+      }
+      if (breakMode === 'overlay') {
+        overlay.start(() => readSettings().catCount);
+      } else if (!breakPanel.isOpen) {
+        await breakPanel.show(readSettings().catCount);
+      }
+    } else {
+      breakMode = undefined;
+      overlay.stop();
+      if (breakPanel.isOpen) {
+        await breakPanel.close();
+      }
     }
   };
   const reconcile = (): Promise<void> => {
@@ -126,7 +194,12 @@ export function activate(context: vscode.ExtensionContext): MeowterTestApi {
     safeWrite(applyPause(store.read(), Date.now()));
     lastTickAt = undefined;
     // Close even if another reconcile is queued; close() is idempotent.
-    queue = queue.then(() => breakPanel.close()).catch((err) => console.error('Meowter: close failed', err));
+    queue = queue
+      .then(async () => {
+        overlay.stop();
+        await breakPanel.close();
+      })
+      .catch((err) => console.error('Meowter: close failed', err));
     await queue;
     await reconcile();
   };
@@ -139,8 +212,23 @@ export function activate(context: vscode.ExtensionContext): MeowterTestApi {
   context.subscriptions.push(
     activity,
     breakPanel,
+    overlay,
     statusBar,
     breakPanel.onDidRequestPause(() => void pause()),
+    vscode.commands.registerCommand(PAUSE_COMMAND, () => pause()),
+    vscode.window.onDidChangeVisibleTextEditors(() => {
+      if (breakMode !== 'overlay' || noEditorTimer) {
+        return;
+      }
+      // Re-check shortly: closing one tab and opening another can briefly show no editor.
+      noEditorTimer = setTimeout(() => {
+        noEditorTimer = undefined;
+        if (breakMode === 'overlay' && CatOverlay.candidates().length === 0) {
+          void reconcile();
+        }
+      }, 300);
+    }),
+    { dispose: () => noEditorTimer && clearTimeout(noEditorTimer) },
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('meowter')) {
         updateStatusBar(lastState);
@@ -183,7 +271,14 @@ export function activate(context: vscode.ExtensionContext): MeowterTestApi {
     isBreakPanelOpen: () => breakPanel.isOpen,
     getStatusBarText: () => statusBar.text,
     getBreakPanelForTest: () => breakPanel.webviewPanel,
-    getWebviewReport: () => breakPanel.webviewReport
+    getWebviewReport: () => breakPanel.webviewReport,
+    getOverlayState: () => overlay.getState(),
+    setNotifier: (n) => {
+      notifier = n ?? vscodeNotifier;
+    },
+    getBreakMode: () => breakMode,
+    getStatusBarCommand: () => (typeof statusBar.command === 'string' ? statusBar.command : statusBar.command?.command),
+    getStatusBarTooltip: () => String(statusBar.tooltip ?? '')
   };
 }
 

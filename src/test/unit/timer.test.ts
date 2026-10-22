@@ -115,7 +115,7 @@ describe('timer', () => {
     });
     it('formats the status text', () => {
       assert.strictEqual(formatStatusText({ ...freshState(0), activeMs: 8 * MIN }, 50 * MIN), '🐱 42m');
-      assert.strictEqual(formatStatusText({ ...freshState(0), breakActive: true }, 50 * MIN), '🐱 Break!');
+      assert.strictEqual(formatStatusText({ ...freshState(0), breakActive: true }, 50 * MIN), '🐱 I took a break ⏸');
     });
   });
 

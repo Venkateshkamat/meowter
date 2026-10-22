@@ -149,9 +149,12 @@ export function remainingMinutes(activeMs: number, intervalMs: number): number {
   return remainingMs <= 0 ? 0 : Math.ceil(remainingMs / MS_PER_MINUTE);
 }
 
+/** The status bar item during a break: it is also a pause button, labelled like the notification's. */
+export const BREAK_STATUS_TEXT = '🐱 I took a break ⏸';
+
 export function formatStatusText(state: SharedState, intervalMs: number): string {
   if (state.breakActive) {
-    return '🐱 Break!';
+    return BREAK_STATUS_TEXT;
   }
   return `🐱 ${remainingMinutes(state.activeMs, intervalMs)}m`;
 }

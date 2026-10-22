@@ -20,7 +20,15 @@ import {
   YARN_FRAME_COUNT,
   YARN_SIZE,
   yarnFrameGrid,
-  yarnRgba
+  yarnRgba,
+  CHASE_CELLS,
+  cellMarkup,
+  coatVars,
+  isCell,
+  SCENE_FPS,
+  SCENE_TICK_HZ,
+  sceneStyle,
+  yarnVars
 } from '../../catArt';
 
 interface Checked {
@@ -29,7 +37,9 @@ interface Checked {
 }
 
 /** Minimal well-formedness check: balanced tags, quoted unique attributes, nothing outside tags. */
-function checkXml(xml: string): Checked {
+function checkXml(rawXml: string): Checked {
+  // <style> holds CSS text (checked separately); everything else must be markup only.
+  const xml = rawXml.replace(/<style>[^<]*<\/style>/g, '<style></style>');
   const tagRe = /<(\/?)([A-Za-z][\w:-]*)((?:\s+[\w:-]+="[^"<]*")*)\s*(\/?)>/g;
   const stack: string[] = [];
   const ids = new Set<string>();
@@ -236,9 +246,11 @@ describe('catArt standalone SVG', () => {
         assert.ok(!/<script|<style|<image|<foreignObject|onload=|javascript:|href=/i.test(svg));
         assert.ok(!svg.replace('xmlns="http://www.w3.org/2000/svg"', '').includes('http'));
         const frames = ANIMATIONS[anim].frames.length;
-        assert.strictEqual(tags.get('animate') ?? 0, frames > 1 ? frames : 0);
-        assert.strictEqual(tags.get('g') ?? 0, frames);
-        if (frames > 1) {
+        // One group per DISTINCT frame; repeated frames of the sequence share a group.
+        const distinct = new Set(ANIMATIONS[anim].frames).size;
+        assert.strictEqual(tags.get('animate') ?? 0, distinct > 1 ? distinct : 0);
+        assert.strictEqual(tags.get('g') ?? 0, distinct);
+        if (frames > 1 && distinct > 1) {
           assert.ok(svg.includes('calcMode="discrete"'));
           assert.ok(svg.includes('repeatCount="indefinite"'));
         }
@@ -290,6 +302,58 @@ describe('catArt standalone SVG', () => {
   it('stays small', () => {
     for (const anim of ANIM_NAMES) {
       assert.ok(buildCatSvg({ coat: 'calico', anim }).length < 40000, anim);
+    }
+  });
+});
+
+describe('catArt scene building blocks', () => {
+  it('every frame is a strip cell whose pixels equal the frame, painted by classes (no baked colours)', () => {
+    for (const name of frameNames()) {
+      assert.ok(isCell(name));
+      const cell = cellMarkup(name);
+      checkXml(`<svg xmlns="http://www.w3.org/2000/svg">${cell}</svg>`);
+      assert.ok(!/fill=/.test(cell), 'colours come from CSS variables, not baked in');
+      let count = 0;
+      for (const m of cell.matchAll(/class="c(.)" d="([^"]+)"/g)) {
+        for (const r of m[2].matchAll(/h(\d+)v1/g)) count += parseInt(r[1], 10);
+      }
+      assert.strictEqual(count, painted(frameGrid(name)).length, name);
+    }
+  });
+
+  it('chase cells are the run frames with a yarn ball in front', () => {
+    assert.strictEqual(CHASE_CELLS.length, 4);
+    CHASE_CELLS.forEach((cell, k) => {
+      assert.ok(isCell(cell));
+      const markup = cellMarkup(cell);
+      checkXml(`<svg xmlns="http://www.w3.org/2000/svg">${markup}</svg>`);
+      assert.ok(markup.includes('class="yr"') && markup.includes('class="yo"'), 'yarn is painted by its own classes');
+      assert.ok(markup.startsWith(cellMarkup(`run${k}`)), 'the cat is the run frame');
+    });
+    assert.ok(!isCell('nope'));
+  });
+
+  it('declares a CSS variable for every palette character a coat uses, and for the yarn', () => {
+    const style = sceneStyle();
+    for (const coat of COATS) {
+      const vars = coatVars(coat);
+      for (const ch of 'obdlpkwmxycfegtuz') {
+        assert.ok(style.includes(`.c${ch}{fill:var(--${ch})}`));
+        assert.ok(vars.includes(`--${ch}:#`), `${coat.id} --${ch}`);
+      }
+    }
+    for (const ch of 'rqso') {
+      assert.ok(style.includes(`.y${ch}{fill:var(--y${ch})}`));
+      assert.ok(yarnVars(1).includes(`--y${ch}:#`));
+    }
+    checkXml(`<svg xmlns="http://www.w3.org/2000/svg">${sceneStyle()}</svg>`);
+  });
+
+  it('plays every sprite animation in a scene on a divisor of the scene clock', () => {
+    assert.strictEqual(SCENE_TICK_HZ, 8);
+    for (const name of ANIM_NAMES) {
+      assert.strictEqual(SCENE_TICK_HZ % SCENE_FPS[name], 0, `${name} scene fps ${SCENE_FPS[name]}`);
+      assert.ok(SCENE_FPS[name] <= ANIMATIONS[name].fps * 2 && SCENE_FPS[name] >= 1);
     }
   });
 });
