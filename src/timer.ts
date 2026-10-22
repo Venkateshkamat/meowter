@@ -129,6 +129,11 @@ export function applyPause(state: SharedState, now: number): SharedState {
   return { version: STATE_VERSION, activeMs: 0, breakActive: false, breakId: state.breakId, updatedAt: now };
 }
 
+/** A user pause (status bar, command, notification, cat tab) only means something during a break. */
+export function canPause(state: SharedState): boolean {
+  return state.breakActive;
+}
+
 /** State when a break is forced to start now. */
 export function applyBreakNow(state: SharedState, intervalMs: number, now: number): SharedState {
   if (state.breakActive) {

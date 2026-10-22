@@ -7,6 +7,7 @@ import { SharedStateStore } from './sharedState';
 import {
   applyBreakNow,
   applyPause,
+  canPause,
   applyTick,
   DEFAULT_BREAK_INTERVAL_MINUTES,
   DEFAULT_IDLE_THRESHOLD_MINUTES,
@@ -190,7 +191,8 @@ export function activate(context: vscode.ExtensionContext): MeowterTestApi {
     await reconcile();
   };
 
-  const pause = async (): Promise<void> => {
+  // Ends the break and restarts the timer, whatever the state is.
+  const resetNow = async (): Promise<void> => {
     safeWrite(applyPause(store.read(), Date.now()));
     lastTickAt = undefined;
     // Close even if another reconcile is queued; close() is idempotent.
@@ -202,6 +204,16 @@ export function activate(context: vscode.ExtensionContext): MeowterTestApi {
       .catch((err) => console.error('Meowter: close failed', err));
     await queue;
     await reconcile();
+  };
+
+  // A user pause (command, status bar, notification, cat tab): a no-op unless a break is running. The shared
+  // file is re-read now, so a stale status bar item, a keybinding or another extension can never zero the timer,
+  // and a click after another window already paused does nothing.
+  const pause = async (): Promise<void> => {
+    if (!canPause(store.read())) {
+      return;
+    }
+    await resetNow();
   };
 
   const startBreakNow = async (): Promise<void> => {
@@ -266,7 +278,8 @@ export function activate(context: vscode.ExtensionContext): MeowterTestApi {
     getState: () => store.read(),
     getStateFilePath: () => store.filePath,
     startBreakNow,
-    pause,
+    // Tests use this to reset the timer from any state; real pause paths use the guarded `pause`.
+    pause: resetNow,
     tickNow: tick,
     isBreakPanelOpen: () => breakPanel.isOpen,
     getStatusBarText: () => statusBar.text,

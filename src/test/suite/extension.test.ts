@@ -499,6 +499,52 @@ suite('Meowter extension', () => {
       assert.strictEqual(cmd(), 'workbench.action.openSettings');
     });
 
+    test('meowter.pause outside a break leaves the timer alone', async () => {
+      await api.tickNow();
+      const file = api.getStateFilePath();
+      const state = api.getState();
+      assert.strictEqual(state.breakActive, false);
+      fs.writeFileSync(file, JSON.stringify({ ...state, activeMs: 654321, updatedAt: Date.now() }));
+      await vscode.commands.executeCommand('meowter.pause');
+      const after = api.getState();
+      assert.strictEqual(after.activeMs, 654321, 'a stray pause must not zero the timer');
+      assert.strictEqual(after.breakActive, false);
+      assert.strictEqual(after.breakId, state.breakId);
+    });
+
+    test('meowter.pause during a break pauses', async () => {
+      await openCode('meowter-test-a.ts', 60);
+      await api.startBreakNow();
+      assert.strictEqual(api.getState().breakActive, true);
+      await vscode.commands.executeCommand('meowter.pause');
+      assert.strictEqual(api.getState().breakActive, false);
+      assert.strictEqual(api.getState().activeMs, 0);
+      assert.strictEqual(api.getOverlayState().editors.length, 0);
+    });
+
+    test('a stale pause click after another window already paused does nothing', async () => {
+      await openCode('meowter-test-a.ts', 60);
+      await api.startBreakNow();
+      const state = api.getState();
+      // Another window pauses and the user has since worked for a while.
+      fs.writeFileSync(api.getStateFilePath(), JSON.stringify({ ...state, breakActive: false, activeMs: 4242, updatedAt: Date.now() }));
+      await vscode.commands.executeCommand('meowter.pause');
+      assert.strictEqual(api.getState().activeMs, 4242, 'the click must not reset the timer again');
+      assert.strictEqual(api.getState().breakActive, false);
+      await api.tickNow();
+      await waitFor(() => !api.getOverlayState().active, 'decorations removed by the shared state');
+    });
+
+    test('the status bar item never pauses outside a break', async () => {
+      const state = api.getState();
+      fs.writeFileSync(api.getStateFilePath(), JSON.stringify({ ...state, activeMs: 777000, updatedAt: Date.now() }));
+      await api.tickNow();
+      const cmd = api.getStatusBarCommand();
+      assert.strictEqual(cmd, 'workbench.action.openSettings', 'outside a break the item opens settings, not pause');
+      await vscode.commands.executeCommand('meowter.pause');
+      assert.ok(api.getState().activeMs >= 777000);
+    });
+
     test('the status bar button also works in cat-tab mode', async () => {
       await vscode.commands.executeCommand('workbench.action.closeAllEditors');
       await api.startBreakNow();

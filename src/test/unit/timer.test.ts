@@ -3,6 +3,7 @@ import {
   applyBreakNow,
   applyPause,
   applyTick,
+  canPause,
   formatStatusText,
   freshState,
   isCounting,
@@ -101,6 +102,22 @@ describe('timer', () => {
       assert.strictEqual(r.breakActive, true);
       assert.strictEqual(r.breakId, 1);
       assert.strictEqual(applyBreakNow(r, 50 * MIN, 6), r);
+    });
+  });
+
+  describe('canPause', () => {
+    it('is only true during a break', () => {
+      assert.strictEqual(canPause({ ...freshState(0), breakActive: true, activeMs: 50 * MIN }), true);
+      assert.strictEqual(canPause({ ...freshState(0), breakActive: false, activeMs: 10 * MIN }), false);
+      assert.strictEqual(canPause(freshState(0)), false);
+    });
+
+    it('is false again once the break was ended (stale click after another window paused)', () => {
+      const during = { ...freshState(0), breakActive: true, activeMs: 50 * MIN, breakId: 3 };
+      assert.strictEqual(canPause(during), true);
+      const after = applyPause(during, 1000);
+      assert.strictEqual(canPause(after), false);
+      assert.strictEqual(after.breakId, 3);
     });
   });
 
