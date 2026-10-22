@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
-import { buildBreakHtml, makeNonce, PAUSE_BUTTON_TEXT } from '../../html';
+import { buildBreakHtml, makeNonce } from '../../html';
 
 describe('buildBreakHtml', () => {
   const nonce = makeNonce();
@@ -13,9 +13,11 @@ describe('buildBreakHtml', () => {
     catCount: 12
   });
 
-  it('has the exact button text', () => {
-    assert.strictEqual(PAUSE_BUTTON_TEXT, 'I took a break ⏸');
-    assert.ok(html.includes('>I took a break ⏸</button>'));
+  it('has no button and no pause text', () => {
+    assert.ok(!/<button/i.test(html));
+    assert.ok(!html.includes('I took a break'));
+    assert.ok(!html.includes('id="pause"'));
+    assert.ok(!html.includes('class="overlay"'));
   });
   it('uses a strict nonce-based CSP with no network', () => {
     assert.ok(html.includes(`script-src 'nonce-${nonce}'`));
@@ -24,7 +26,7 @@ describe('buildBreakHtml', () => {
     assert.ok(!/https?:\/\//.test(html));
     assert.ok(html.includes(`<script nonce="${nonce}"`));
   });
-  it('has no heading, only the button in the overlay', () => {
+  it('has no heading', () => {
     assert.ok(!/<h[1-6]/.test(html));
     assert.ok(!html.includes('Time for a break'));
   });
@@ -49,7 +51,9 @@ describe('cats.css', () => {
   it('scales the pixel art with nearest-neighbour rendering', () => {
     assert.ok(/\.cat,\s*\.ball \{[^}]*image-rendering: pixelated/.test(css));
   });
-  it('keeps the pause button styled', () => {
-    assert.ok(css.includes('#pause'));
+  it('has no pause button styling', () => {
+    assert.ok(!css.includes('#pause'));
+    assert.ok(!css.includes('.overlay'));
+    assert.ok(!/button/i.test(css));
   });
 });

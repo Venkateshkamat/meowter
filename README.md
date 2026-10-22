@@ -7,7 +7,7 @@ A notification says **Time for a break 🐱** with one button, **I took a break 
 - Time counts only while an IDE window is focused and you are active. It is shared across all windows of the same user profile (state is kept in a JSON file in the extension's global storage). A pause in any window ends the break in all of them.
 - A status bar item shows the minutes left (`🐱 42m`). Clicking it opens the setting for the break interval. During a break it reads `🐱 I took a break ⏸` and clicking it pauses, exactly like the notification button (the notification hides itself after a few seconds, the status bar item stays).
 - Editors you open during the break (a new tab, a split, another file) get cats too. All cats are removed when the break ends.
-- If no text editor is visible when the break starts, or every one is closed during the break, the cats appear in a full tab instead (with the same **I took a break ⏸** button). Closing that tab counts as clicking the button, and switching away from it brings it back. An editor that appears while the tab is showing does not switch the break back to decorations.
+- If no text editor is visible when the break starts, or every one is closed during the break, the cats appear in a full tab instead. The tab has no button: close the tab, click the status bar item, or use the notification to end the break. Closing the tab counts as clicking **I took a break ⏸**, and switching away from it brings it back. An editor that appears while the tab is showing does not switch the break back to decorations.
 - A notification left over from an earlier break is ignored; it can never reset a newer timer.
 
 ### How the cats are drawn over the code

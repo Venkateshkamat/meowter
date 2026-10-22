@@ -6,8 +6,6 @@ export interface BreakHtmlOptions {
   catCount: number;
 }
 
-export const PAUSE_BUTTON_TEXT = 'I took a break ⏸';
-
 /** Pure HTML builder for the break webview (strict CSP, nonce-based script). */
 export function buildBreakHtml(o: BreakHtmlOptions): string {
   const csp = [
@@ -27,9 +25,6 @@ export function buildBreakHtml(o: BreakHtmlOptions): string {
 </head>
 <body data-cat-count="${o.catCount}">
   <div id="stage" aria-hidden="true"></div>
-  <div class="overlay">
-    <button id="pause" type="button">${PAUSE_BUTTON_TEXT}</button>
-  </div>
   <script nonce="${o.nonce}" src="${o.scriptUri}"></script>
 </body>
 </html>`;

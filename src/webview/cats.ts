@@ -78,7 +78,6 @@ declare const CatArt: typeof import('../catArt');
   }
 
   const stage = document.getElementById('stage') as HTMLDivElement;
-  const pauseButton = document.getElementById('pause') as HTMLButtonElement;
   const requested = parseInt(document.body.dataset.catCount ?? '8', 10);
   const catCount = clamp(Number.isFinite(requested) ? requested : 8, 1, 30);
 
@@ -588,7 +587,6 @@ declare const CatArt: typeof import('../catArt');
   }
   for (const cat of cats) draw(cat);
   window.addEventListener('resize', onResize);
-  pauseButton.addEventListener('click', () => vscodeApi.postMessage({ type: 'pause' }));
   requestAnimationFrame(frame);
   document.body.dataset.ready = 'true';
   vscodeApi.postMessage({ type: 'ready', cats: cats.length });

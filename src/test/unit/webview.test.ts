@@ -88,7 +88,6 @@ function boot(width: number, height: number, catCount: number, opts: BootOpts = 
     return e;
   };
   const stage = mk('div');
-  const pause = mk('button');
   const body = mk('body');
   body.dataset.catCount = String(catCount);
   const math = Object.create(Math) as Math;
@@ -101,7 +100,7 @@ function boot(width: number, height: number, catCount: number, opts: BootOpts = 
     }
   };
   const sandbox = {
-    document: { getElementById: (id: string) => (id === 'stage' ? stage : pause), createElement: mk, body },
+    document: { getElementById: (id: string) => (id === 'stage' ? stage : null), createElement: mk, body },
     window: win,
     performance: { now: () => perfNow },
     requestAnimationFrame: (cb: (t: number) => void) => {
@@ -194,6 +193,15 @@ describe('bundled webview script', () => {
       assert.match(c.style.width, /^\d+px$/);
       assert.ok(parseInt(c.style.width, 10) >= FRAME_SIZE * 4, 'sprites are scaled up clearly');
     }
+  });
+
+  it('has no pause button: the script neither creates one nor posts a pause message', () => {
+    const code = fs.readFileSync(path.resolve(__dirname, '../../../out/webview/cats.js'), 'utf8');
+    assert.ok(!/getElementById\(['"]pause['"]\)/.test(code));
+    assert.ok(!/['"]pause['"]/.test(code));
+    const { els, posted } = run(1000, 700, 8, 1);
+    assert.ok(!els.some((e) => e.tag === 'button'));
+    assert.ok(posted.every((m) => m.type === 'ready'));
   });
 
   it('clamps the cat count to 1..30', () => {

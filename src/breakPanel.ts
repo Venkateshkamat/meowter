@@ -14,7 +14,7 @@ export interface WebviewReport {
  * Owns the cat webview lifecycle for one window.
  *
  * Events:
- *  - onDidRequestPause: the user clicked the button or closed the cat tab.
+ *  - onDidRequestPause: the user closed the cat tab (the tab has no button).
  *    Programmatic closes (close()) never fire it.
  */
 export class BreakPanel implements vscode.Disposable {
@@ -78,9 +78,7 @@ export class BreakPanel implements vscode.Disposable {
     });
 
     panel.webview.onDidReceiveMessage((msg: { type?: string; cats?: number }) => {
-      if (msg?.type === 'pause') {
-        this.pauseEmitter.fire();
-      } else if (msg?.type === 'ready') {
+      if (msg?.type === 'ready') {
         this.report = { ready: true, cats: typeof msg.cats === 'number' ? msg.cats : 0 };
       }
     });
