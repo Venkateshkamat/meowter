@@ -6,6 +6,7 @@ import type { MeowterTestApi } from '../../extension';
 import type { Notifier } from '../../notice';
 import { assignStyles, enabledStyles, STYLE_NAMES } from '../../catStyles';
 import { overlayWidthPx } from '../../overlayLayout';
+import { EXTENSION_MODE_TEST } from '../../testApi';
 
 const EXT_ID = 'venkateshkamat.meowter';
 const NOTICE_MESSAGE = 'Time for a break 🐱';
@@ -194,7 +195,7 @@ suite('Meowter extension', () => {
     await waitFor(() => vscode.extensions.getExtension(EXT_ID) !== undefined, 'extension to be registered', 30000);
     const ext = vscode.extensions.getExtension(EXT_ID);
     assert.ok(ext, 'extension should be present');
-    api = (await ext.activate()) as MeowterTestApi;
+    api = (await ext.activate()) as MeowterTestApi; // exported in Test mode only
   });
 
   setup(async () => {
@@ -222,6 +223,17 @@ suite('Meowter extension', () => {
   test('activates and returns the test API', () => {
     assert.ok(vscode.extensions.getExtension(EXT_ID)?.isActive);
     assert.strictEqual(typeof api.startBreakNow, 'function');
+  });
+
+  test('the test API is exposed because the extension runs in Test mode', () => {
+    assert.strictEqual(api.getExtensionMode(), vscode.ExtensionMode.Test, 'context.extensionMode is Test');
+    assert.strictEqual(vscode.ExtensionMode.Test, EXTENSION_MODE_TEST, 'the pure decision uses the real enum value');
+    const exported = vscode.extensions.getExtension(EXT_ID)?.exports as MeowterTestApi | undefined;
+    assert.ok(exported, 'exports exist in Test mode');
+    assert.strictEqual(exported, api);
+    for (const name of ['getState', 'startBreakNow', 'pause', 'tickNow', 'setNotifier', 'flushNow'] as const) {
+      assert.strictEqual(typeof exported[name], 'function', name);
+    }
   });
 
   test('settings have the right defaults', () => {

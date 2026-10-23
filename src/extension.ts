@@ -21,6 +21,7 @@ import {
   SharedState,
   validateIntervalInput
 } from './timer';
+import { exportsForMode } from './testApi';
 
 /** One counting tick per second, only while this window is focused or a break is showing. */
 const TICK_MS = 1000;
@@ -32,6 +33,8 @@ const FALLBACK_POLL_MS = 1000;
 const WATCH_DEBOUNCE_MS = 30;
 
 export interface MeowterTestApi {
+  /** The `vscode.ExtensionMode` this extension was activated in. */
+  getExtensionMode(): vscode.ExtensionMode;
   getState(): SharedState;
   getStateFilePath(): string;
   startBreakNow(): Promise<void>;
@@ -100,7 +103,7 @@ function readSettings(): Settings {
 
 let shutdown: (() => Promise<void>) | undefined;
 
-export async function activate(context: vscode.ExtensionContext): Promise<MeowterTestApi> {
+export async function activate(context: vscode.ExtensionContext): Promise<MeowterTestApi | undefined> {
   const store = new SharedStateStore(context.globalStorageUri.fsPath);
   await store.ensureDir();
   // A file that cannot be read now is not "no state": start fresh in memory and let the first refresh adopt the real one.
@@ -481,7 +484,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Meowte
   statusBar.show();
   await tick();
 
-  return {
+  // The test API is exposed only in Test mode; otherwise nothing is exported.
+  return exportsForMode(context.extensionMode, {
+    getExtensionMode: () => context.extensionMode,
     getState: () => core.view,
     getStateFilePath: () => store.filePath,
     startBreakNow,
@@ -513,7 +518,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Meowte
     getBreakMode: () => breakMode,
     getStatusBarCommand: () => (typeof statusBar.command === 'string' ? statusBar.command : statusBar.command?.command),
     getStatusBarTooltip: () => String(statusBar.tooltip ?? '')
-  };
+  });
 }
 
 export function deactivate(): Promise<void> | undefined {
