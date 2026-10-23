@@ -1,7 +1,7 @@
 {
   "name": "meowter",
   "displayName": "Meowter",
-  "description": "Cats take over your IDE when it's time for a break.",
+  "description": "Pixel-art cats take over your editor when it's time for a break.",
   "version": "0.0.1",
   "publisher": "venkateshkamat",
   "author": "Venkatesh Kamat",
@@ -11,12 +11,40 @@
     "type": "git",
     "url": "https://github.com/Venkateshkamat/meowter.git"
   },
+  "homepage": "https://github.com/Venkateshkamat/meowter#readme",
+  "bugs": {
+    "url": "https://github.com/Venkateshkamat/meowter/issues"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Visualization"
   ],
+  "keywords": [
+    "break",
+    "break reminder",
+    "pomodoro",
+    "rest",
+    "cats",
+    "cat",
+    "pets",
+    "pixel art",
+    "wellbeing",
+    "productivity",
+    "timer",
+    "eye strain",
+    "stretch",
+    "health",
+    "reminder",
+    "fun",
+    "cursor"
+  ],
+  "galleryBanner": {
+    "color": "#ffd591",
+    "theme": "light"
+  },
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -38,6 +66,7 @@
     "@types/vscode": "^1.90.0",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^4.0.0",
+    "gifenc": "^1.0.3",
     "mocha": "^12.0.3",
     "typescript": "^5.9.3"
   },

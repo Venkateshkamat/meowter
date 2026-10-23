@@ -1,8 +1,14 @@
 # Meowter
 
+> Pixel-art cats take over your editor when it's time for a break.
+
+![Meowter: two cats face off, hiss and fight in a dust cloud, while a third climbs the side of the editor and a fourth jumps across the code](media/demo.gif)
+
 A VS Code extension (also works in Cursor). After a configurable amount of active IDE use, small pixel-art cats take over your code: they appear on top of every visible text editor, each moving in its own style (see [Cat styles](#cat-styles)): wandering along the bottom, climbing the side edges, bouncing across the middle, chasing yarn balls, or fighting in pairs. Your IDE layout is not touched, and the cats never block typing or clicking.
 
 A notification says **Time for a break 🐱** with one button, **I took a break ⏸**. Click it to send the cats away and restart the timer. Dismissing the notification (its ✕) counts as clicking the button.
+
+![A still from a break: two cats facing off on the floor, one cat climbing the left wall and one cat mid-jump](media/screenshot.png)
 
 - Time counts only while an IDE window is focused and you are active. It is shared across all windows of the same user profile (state is kept in a JSON file in the extension's global storage). A pause in any window ends the break in all of them (the other windows are told by a file-system event, within a fraction of a second).
 - The timer is cheap by design. A focused window counts in memory every second and writes the file only about every 15 seconds (and when it loses focus, when a break starts or ends, and when the extension shuts down), always as "the file's time plus what this window counted", so time from other windows is never overwritten. Reads and writes are asynchronous. A window that is not focused and has no break running has no timer at all; it wakes up on a file event or a window focus change. Settings are read once and when they change, and the status bar is only updated when its text changes. If the editor crashes, at most the last ~15 seconds of counted time are lost.
