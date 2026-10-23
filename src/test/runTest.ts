@@ -3,9 +3,13 @@ import * as net from 'net';
 import * as path from 'path';
 import { runTests } from '@vscode/test-electron';
 
-const EDITORS: Record<string, string> = {
-  vscode: '/Applications/Visual Studio Code.app/Contents/MacOS/Electron',
-  cursor: '/Applications/Cursor.app/Contents/MacOS/Cursor'
+/** Where each editor lives on macOS; the first path that exists is used (VS Code renamed its executable from Electron to Code). */
+const EDITORS: Record<string, string[]> = {
+  vscode: [
+    '/Applications/Visual Studio Code.app/Contents/MacOS/Code',
+    '/Applications/Visual Studio Code.app/Contents/MacOS/Electron'
+  ],
+  cursor: ['/Applications/Cursor.app/Contents/MacOS/Cursor']
 };
 
 /** A free local port, used for the editor's DevTools endpoint (lets a test measure the real DOM). */
@@ -22,7 +26,7 @@ function freePort(): Promise<number> {
 
 async function main(): Promise<void> {
   const editor = process.argv[2] ?? process.env.MEOWTER_TEST_EDITOR ?? 'vscode';
-  const vscodeExecutablePath = process.env.MEOWTER_EDITOR_PATH ?? EDITORS[editor];
+  const vscodeExecutablePath = process.env.MEOWTER_EDITOR_PATH ?? (EDITORS[editor] ?? []).find((p) => fs.existsSync(p)) ?? EDITORS[editor]?.[0];
   if (!vscodeExecutablePath || !fs.existsSync(vscodeExecutablePath)) {
     throw new Error(`Editor "${editor}" not found at ${vscodeExecutablePath}`);
   }
