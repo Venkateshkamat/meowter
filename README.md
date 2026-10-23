@@ -81,3 +81,7 @@ npm test               # unit + VS Code integration
 The integration tests use the installed editors (macOS paths in `src/test/runTest.ts`; override with `MEOWTER_EDITOR_PATH`) with isolated profiles under `.vscode-test/`.
 
 To try it: open this folder in VS Code or Cursor and press F5 ("Run Extension"), or run `cursor --extensionDevelopmentPath=<this folder>`. Lower `meowter.breakIntervalMinutes` to 1 to see a break quickly.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
