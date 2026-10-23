@@ -20,6 +20,7 @@
  *   c  belly / chest          f  feet                      e  ear (outer)
  *   g  face centre / blaze    t  tail tip                  u  tail body
  *   z  sleeping "z"           r/q/s  yarn base / dark / light
+ *   h/a  dust cloud light / shade (same for every coat)     j  fight star (yellow, same for every coat)
  */
 
 export const FRAME_SIZE = 32;
@@ -123,7 +124,7 @@ export function resolveCoat(coat: Coat | string | number): Coat {
 }
 
 /** Every character a sprite grid may contain. */
-export const PALETTE_CHARS = '.obdlpkwmxycfegtuzrqs';
+export const PALETTE_CHARS = '.obdlpkwmxycfegtuzrqshaj';
 
 /** Colour (#rrggbb) for a palette character, or undefined for transparent / yarn characters. */
 export function colorFor(coat: Coat, ch: string): string | undefined {
@@ -146,6 +147,9 @@ export function colorFor(coat: Coat, ch: string): string | undefined {
     case 't': return pat === 'points' ? coat.point : pat === 'calico' ? coat.patchB : pat === 'tabby' ? coat.stripe : pat === 'tuxedo' ? coat.light : coat.base;
     case 'u': return pat === 'points' ? coat.point : pat === 'calico' ? coat.patchA : coat.base;
     case 'z': return '#a9bcff';
+    case 'h': return '#f1ece2';
+    case 'a': return '#c9c1b2';
+    case 'j': return '#ffd23f';
     default: return undefined;
   }
 }
@@ -613,6 +617,129 @@ function grabFrame(phase: number): string[] {
   return render(climbLayers('near', phase === 1, phase % 2, false));
 }
 
+// ----- hiss (arched back, puffed tail, flat ears, open mouth) -----
+
+/** A head with the ears laid flat, narrowed eyes and an open, hissing mouth; `wide` opens it further. */
+function hissHead(wide: boolean): Grid {
+  return [
+    '.........',
+    'eee...eee',
+    'xxbbmbbyy',
+    'xxbbgbbyy',
+    'bbkbgbkbb',
+    'bbkgggkbb',
+    wide ? 'bbwpppwbb' : 'bblwpwlbb',
+    wide ? '.bbpppbb.' : '.bblpllb.'
+  ];
+}
+
+const ARCH_TORSO: Grid = [
+  '.....bmb.....',
+  '...bbmbbmb...',
+  '..bbmxxmbmb..',
+  '.bbmyxxxmybb.',
+  '.bbbyxxxbbbb.',
+  '.bbbbbbbbbbb.',
+  '..bbcccccbb..',
+  '...ddddddd...'
+];
+
+/** A tail fluffed up like a bottle brush. */
+const TAIL_PUFF_A: Grid = [
+  '.tt.',
+  'tuut',
+  'uuuu',
+  'umuu',
+  'uuuu',
+  'uumu',
+  'uuuu',
+  '.uuu',
+  '..uu'
+];
+const TAIL_PUFF_B: Grid = [
+  '.t.t',
+  'tutt',
+  'uuuu',
+  'uumu',
+  'uuuu',
+  'umuu',
+  'uuuu',
+  'uuu.',
+  'uu..'
+];
+
+function hissFrame(phase: number): string[] {
+  const tx = 8;
+  const ty = 16 - phase; // the back rises a little with every hiss
+  const legH = 28 - (ty + 8) + 1;
+  return render([
+    { g: legDown(legH), x: tx + 2, y: ty + 8, shade: true },
+    { g: legDown(legH), x: tx + 9, y: ty + 8, shade: true },
+    { g: phase === 0 ? TAIL_PUFF_A : TAIL_PUFF_B, x: tx - 3, y: ty - 3 },
+    { g: ARCH_TORSO, x: tx, y: ty },
+    { g: legDown(legH), x: tx + 1, y: ty + 8 },
+    { g: legDown(legH), x: tx + 8, y: ty + 8 },
+    { g: hissHead(phase === 1), x: tx + 10, y: ty + 2, ink: true }
+  ]);
+}
+
+// ----- fight cloud: a tumbling ball of dust with paws, tails and stars poking out -----
+
+function fightFrame(phase: number): string[] {
+  const cx = 16;
+  const cy = 22;
+  const lowest = FEET_ROWS - 2; // the dust rests on the floor
+  const turn = (phase * Math.PI) / 2;
+  const cv: string[][] = Array.from({ length: FRAME_SIZE }, () => Array<string>(FRAME_SIZE).fill('.'));
+  const put = (x: number, y: number, ch: string): void => {
+    // (clipped so that the outline stays inside the columns the cats use)
+    if (x >= CONTENT_MIN_COL + 1 && x <= CONTENT_MAX_COL - 1 && y >= 1 && y <= lowest) cv[y][x] = ch;
+  };
+  // The dust ball: a lumpy disc with swirling shade streaks that turn from frame to frame.
+  for (let y = 0; y < FRAME_SIZE; y++) {
+    for (let x = 0; x < FRAME_SIZE; x++) {
+      const dx = x - cx;
+      const dy = y - cy;
+      const r = Math.sqrt(dx * dx + dy * dy);
+      const ang = Math.atan2(dy, dx);
+      const limit = 7.2 + 1.1 * Math.cos(3 * ang + turn) + 0.7 * Math.cos(5 * ang - 2 * turn);
+      if (r <= limit) {
+        const band = Math.floor((ang + r * 0.5 + turn) / (Math.PI / 3));
+        put(x, y, ((band % 2) + 2) % 2 === 0 ? 'a' : 'h');
+      }
+    }
+  }
+  const polar = (angle: number, radius: number): [number, number] => [Math.round(cx + Math.cos(angle) * radius), Math.round(cy + Math.sin(angle) * radius)];
+  const blob = (x: number, y: number, ch: string): void => {
+    put(x, y, ch);
+    put(x + 1, y, ch);
+    put(x, y + 1, ch);
+    put(x + 1, y + 1, ch);
+  };
+  // One cat's paw and tail poke out of the cloud (the other cat is this one mirrored).
+  const pawAngle = turn + 3.6;
+  for (let k = 0; k < 5; k++) {
+    const [x, y] = polar(pawAngle, 5 + k);
+    blob(x, y, k < 3 ? 'b' : 'f');
+  }
+  const tailAngle = turn + 5.3;
+  for (let k = 0; k < 6; k++) {
+    const [x, y] = polar(tailAngle + Math.sin(k * 0.9) * 0.28, 6 + k);
+    put(x, y, k >= 4 ? 't' : k % 3 === 2 ? 'm' : 'u');
+    put(x + 1, y, k >= 4 ? 't' : 'u');
+  }
+  // Little stars (sparkles) that jump around.
+  for (const [angle, radius] of [[turn + 0.4, 10], [turn + 2.5, 9]] as const) {
+    const [x, y] = polar(angle, radius);
+    put(x, y, 'j');
+    put(x - 1, y, 'j');
+    put(x + 1, y, 'j');
+    put(x, y - 1, 'j');
+    put(x, y + 1, 'j');
+  }
+  return render([{ g: cv.map((r) => r.join('')), x: 0, y: 0 }]);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Frames and animations
 // ---------------------------------------------------------------------------------------------
@@ -648,7 +775,13 @@ const FRAMES: Record<string, string[]> = {
   climb1: climbFrame(1),
   grab0: grabFrame(0),
   grab1: grabFrame(1),
-  grab2: grabFrame(2)
+  grab2: grabFrame(2),
+  hiss0: hissFrame(0),
+  hiss1: hissFrame(1),
+  fight0: fightFrame(0),
+  fight1: fightFrame(1),
+  fight2: fightFrame(2),
+  fight3: fightFrame(3)
 };
 
 export type AnimName =
@@ -663,7 +796,9 @@ export type AnimName =
   | 'fall'
   | 'land'
   | 'climb'
-  | 'grab';
+  | 'grab'
+  | 'hiss'
+  | 'fight';
 
 export interface Animation {
   frames: readonly string[];
@@ -682,7 +817,9 @@ export const ANIMATIONS: Readonly<Record<AnimName, Animation>> = {
   fall: { frames: ['jumpFall'], fps: 1 },
   land: { frames: ['jumpLand'], fps: 1 },
   climb: { frames: ['climb0', 'climb1'], fps: 4 },
-  grab: { frames: ['grab0', 'grab0', 'grab1', 'grab0', 'grab2'], fps: 3 }
+  grab: { frames: ['grab0', 'grab0', 'grab1', 'grab0', 'grab2'], fps: 3 },
+  hiss: { frames: ['hiss0', 'hiss0', 'hiss1', 'hiss0', 'hiss1', 'hiss1'], fps: 4 },
+  fight: { frames: ['fight0', 'fight1', 'fight2', 'fight3'], fps: 8 }
 };
 
 export const ANIM_NAMES = Object.keys(ANIMATIONS) as AnimName[];
@@ -904,7 +1041,9 @@ export const SCENE_FPS: Readonly<Record<AnimName, number>> = {
   fall: 1,
   land: 1,
   climb: 4,
-  grab: 4
+  grab: 4,
+  hiss: 4,
+  fight: 8
 };
 
 /** `<style>` that paints classed sprite pixels from per-instance CSS variables (--b, --d, ..., --yr for yarn). */

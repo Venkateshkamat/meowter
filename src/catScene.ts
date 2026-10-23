@@ -26,7 +26,7 @@ import {
   YARN_COLORS,
   yarnVars
 } from './catArt';
-import { assignStyles, CatStyle } from './catStyles';
+import { assignStyles, Band, CatStyle, pairBand } from './catStyles';
 
 /** A pose shown by the plan: any animation, or running with a yarn ball in front. */
 export type Variant = AnimName | 'chase';
@@ -38,6 +38,8 @@ export interface Keyframe {
   p: number;
   /** Height above the floor in px. */
   y: number;
+  /** Extra horizontal offset in px (default 0), for things that must stay a fixed number of px apart whatever the width. */
+  dx?: number;
 }
 
 export interface Segment {
@@ -91,6 +93,15 @@ export const SPEED = { walk: 0.07, run: 0.26, chase: 0.22, hop: 0.9 } as const;
  */
 export const MAX_ARC_SPEED = 0.25;
 
+/** The most a fight cloud rolls sideways (widths per second). */
+export const FIGHT_ROLL_SPEED = 0.1;
+
+/**
+ * When two fighters face off their sprites are this many sprite widths apart (the boxes never overlap and the
+ * snouts do not touch). It is kept in PIXELS (see Keyframe.dx), so it holds in an editor of any width.
+ */
+const FACE_OFF_SPANS = 1.15;
+
 /** Cat sprite pixels above the floor that the head never exceeds when standing. */
 const TOP_ROWS = 24;
 
@@ -98,6 +109,8 @@ interface Cursor {
   t: number;
   p: number;
   y: number;
+  /** Horizontal offset in px on top of p. */
+  dx: number;
   flip: boolean;
 }
 
@@ -107,7 +120,7 @@ class Timeline {
   readonly cur: Cursor;
 
   constructor(p0: number, flip: boolean) {
-    this.cur = { t: 0, p: p0, y: 0, flip };
+    this.cur = { t: 0, p: p0, y: 0, dx: 0, flip };
     this.keys.push({ t: 0, p: p0, y: 0 });
   }
 
@@ -116,7 +129,9 @@ class Timeline {
   }
 
   private key(): void {
-    this.keys.push({ t: this.cur.t, p: this.cur.p, y: this.cur.y });
+    const k: Keyframe = { t: this.cur.t, p: this.cur.p, y: this.cur.y };
+    if (this.cur.dx !== 0) k.dx = this.cur.dx;
+    this.keys.push(k);
   }
 
   hold(variant: Variant, dur: number): void {
@@ -136,20 +151,36 @@ class Timeline {
     this.key();
   }
 
+  /** Like move(), but taking exactly `dur` seconds (the speed follows); `flip` forces the facing. */
+  moveDur(variant: Variant, p1: number, dur: number, flip?: boolean, dx1?: number): void {
+    if (flip !== undefined) this.cur.flip = flip;
+    else if (p1 !== this.cur.p) this.cur.flip = p1 < this.cur.p;
+    this.seg(variant, dur);
+    this.cur.t += dur;
+    this.cur.p = p1;
+    if (dx1 !== undefined) this.cur.dx = dx1;
+    this.key();
+  }
+
   /** A parabolic hop/bounce of height `h` px landing at `p1` (rising = 'jump', falling = 'fall'). */
-  arc(h: number, p1: number, gravity: number): void {
+  arc(h: number, p1: number, gravity: number, flip?: boolean, easeOut = false): void {
     const half = Math.sqrt((2 * h) / gravity);
     const p0 = this.cur.p;
-    if (p1 !== p0) this.cur.flip = p1 < p0;
+    if (flip !== undefined) this.cur.flip = flip;
+    else if (p1 !== p0) this.cur.flip = p1 < p0;
     const steps = 6;
     for (const [part, variant] of [['up', 'jump'], ['down', 'fall']] as const) {
       this.seg(variant, half);
       for (let i = 1; i <= steps; i++) {
         const u = i / steps;
         const tt = this.cur.t + half * u;
-        const frac = part === 'up' ? u / 2 : 0.5 + u / 2;
+        const lin = part === 'up' ? u / 2 : 0.5 + u / 2;
+        // (easeOut: push off sideways fast and settle, so two cats leaving the same spot separate at once)
+        const frac = easeOut ? 1 - (1 - lin) * (1 - lin) : lin;
         const y = part === 'up' ? h * (1 - (1 - u) * (1 - u)) : h * (1 - u * u);
-        this.keys.push({ t: tt, p: p0 + (p1 - p0) * frac, y });
+        const k: Keyframe = { t: tt, p: p0 + (p1 - p0) * frac, y };
+        if (this.cur.dx !== 0) k.dx = this.cur.dx;
+        this.keys.push(k);
       }
       this.cur.t += half;
     }
@@ -193,7 +224,9 @@ export function planCat(
   rand: () => number,
   opts: { scale: number; heightPx: number; style: CatStyle; coat: number; target?: number; slot?: number }
 ): CatPlan {
-  const { scale: s, heightPx: H, style } = opts;
+  const { scale: s, heightPx: H } = opts;
+  // (Fighters are planned in pairs by planPair; a lone one just wanders.)
+  const style: CatStyle = opts.style === 'fighters' ? 'wanderer' : opts.style;
   const gravity = 520 * s;
   const range = (a: number, b: number): number => a + rand() * (b - a);
   const topRoom = Math.max(0, H - TOP_ROWS * s);
@@ -373,8 +406,182 @@ export function planCat(
 }
 
 /**
+ * Plans a fighting PAIR on the floor: two cats on one shared timeline (same length, same start, so they stay in
+ * step while looping). They square up, hiss, swat at each other, rush together into a rolling fight cloud, burst
+ * apart, back off or circle, now and then one chases the other a short way, and then it starts again.
+ *
+ * Cat A is always the left one (it looks right), cat B the right one. The pair keeps to its `band` of the width
+ * (see pairBand), so several pairs do not crowd one spot. Every move of both cats takes the same time and respects
+ * the normal speed limits, and the loop closes smoothly (back at the start positions, facing each other).
+ *
+ * The face-off distance is kept in pixels, not as a share of the width: the two cats meet at one point (p) and
+ * are held `FACE_OFF_SPANS` sprite widths apart by opposite pixel offsets (Keyframe.dx), which brings them
+ * together again (dx back to 0) when they rush into the cloud. So the sprites never overlap in a face-off,
+ * however wide or narrow the editor is.
+ */
+export function planPair(
+  rand: () => number,
+  opts: { scale: number; heightPx: number; coats: readonly [number, number]; band?: Band; target?: number }
+): [CatPlan, CatPlan] {
+  const { scale: s, heightPx: H } = opts;
+  const gravity = 520 * s;
+  const range = (a: number, b: number): number => a + rand() * (b - a);
+  const topRoom = Math.max(0, H - TOP_ROWS * s);
+  const target = opts.target ?? range(18, 28);
+  const [bLo, bHi] = opts.band ?? [0.03, 0.97];
+  const bw = bHi - bLo;
+  /** Pixels each cat stands off the meeting point in a face-off. */
+  const faceOff = (FACE_OFF_SPANS * sceneMetrics(s).span) / 2;
+  // Where the two meet: not too near the edges, so neither cat is pushed outside by its face-off offset.
+  let meetLo = Math.max(bLo + 0.06, 0.2);
+  let meetHi = Math.min(bHi - 0.06, 0.8);
+  if (meetLo > meetHi) meetLo = meetHi = clamp((bLo + bHi) / 2, 0.2, 0.8);
+  // The cloud and the burst stay this far from the band's edges.
+  const margin = Math.min(0.08, bw / 4);
+  const gap0 = clamp(range(0.5, 0.9) * bw, Math.min(0.2, bw), bw);
+  const pa0 = bLo + range(0, bw - gap0);
+  const pb0 = pa0 + gap0;
+  const a = new Timeline(pa0, false);
+  const b = new Timeline(pb0, true);
+  const t = (): number => a.cur.t;
+  const faceEachOther = (): void => {
+    a.cur.flip = false; // A is the left cat and looks right, B the right cat and looks left
+    b.cur.flip = true;
+  };
+  const hold = (va: Variant, vb: Variant, dur: number): void => {
+    faceEachOther();
+    a.hold(va, dur);
+    b.hold(vb, dur);
+  };
+  /** Both cats move at the same time; the time is set by the one with the longer way, at `speed`. */
+  const together = (va: Variant, vb: Variant, pa: number, pb: number, speed: number, facing: 'travel' | 'each', exact = false): void => {
+    const da = Math.abs(pa - a.cur.p);
+    const db = Math.abs(pb - b.cur.p);
+    // (a short way is walked, not run; a cat that hardly moves stands and waits, looking at the other,
+    // rather than walking on the spot)
+    const still = exact ? 1e-9 : 0.004;
+    const variantFor = (v: Variant, d: number): Variant => (v === 'run' && d < 0.03 ? 'walk' : v);
+    const secondsFor = (v: Variant, d: number): number => (d < still ? 0 : d / (v === 'walk' ? Math.min(speed, SPEED.walk) : speed));
+    const dur = Math.max(0.4, secondsFor(variantFor(va, da), da), secondsFor(variantFor(vb, db), db));
+    if (da < still) {
+      a.cur.flip = false;
+      a.hold('idle', dur);
+    } else {
+      a.moveDur(variantFor(va, da), pa, dur, facing === 'each' ? false : undefined);
+    }
+    if (db < still) {
+      b.cur.flip = true;
+      b.hold('idle', dur);
+    } else {
+      b.moveDur(variantFor(vb, db), pb, dur, facing === 'each' ? true : undefined);
+    }
+  };
+  let clouds = 0;
+
+  /** Stalk towards each other until they stand face to face (the pixel offsets open up on the way). */
+  const stalk = (): void => {
+    const mid = clamp((a.cur.p + b.cur.p) / 2, meetLo, meetHi);
+    const dist = Math.max(Math.abs(mid - a.cur.p), Math.abs(mid - b.cur.p));
+    const dur = Math.max(0.9, dist / SPEED.walk);
+    a.moveDur('walk', mid, dur, false, -faceOff);
+    b.moveDur('walk', mid, dur, true, faceOff);
+  };
+
+  const fightCloud = (): void => {
+    // Rush together into one spot...
+    a.moveDur('run', a.cur.p, 0.5, false, 0);
+    b.moveDur('run', b.cur.p, 0.5, true, 0);
+    // ...and roll around in a cloud a while, inside the band.
+    const mid = a.cur.p;
+    const dur = range(2.6, 4.2);
+    const maxDrift = Math.min(FIGHT_ROLL_SPEED * dur * 0.9, 0.14);
+    const roomLeft = Math.max(0, mid - (bLo + margin));
+    const roomRight = Math.max(0, bHi - margin - mid);
+    const dir = roomLeft > roomRight ? (rand() < 0.75 ? -1 : 1) : rand() < 0.75 ? 1 : -1;
+    const room = dir === -1 ? roomLeft : roomRight;
+    const drift = room < 0.03 ? 0 : dir * range(0.03, Math.min(maxDrift, room));
+    a.moveDur('fight', mid + drift, dur, false);
+    b.moveDur('fight', mid + drift, dur, true);
+    clouds++;
+    // The cloud bursts: the cats pull out of it a little way apart (so they are not on top of each other)...
+    const centre = a.cur.p;
+    a.moveDur('fight', clamp(centre - 0.03, bLo, bHi), 0.35, false);
+    b.moveDur('fight', clamp(centre + 0.03, bLo, bHi), 0.35, true);
+    // ...and both jump back (same height, so they stay in step), landing facing each other. The sideways push is
+    // front-loaded, so they are clear of each other within a moment.
+    const h = clamp(range(0.35, 0.6) * topRoom, 12 * s, Math.max(12 * s, 0.8 * topRoom));
+    const airSeconds = 2 * Math.sqrt((2 * h) / gravity);
+    const stepMax = (MAX_ARC_SPEED * airSeconds) / 1.5; // (the front-loaded push is 1.5 times its average speed)
+    const step = (): number => Math.min(range(0.1, 0.18), stepMax);
+    a.arc(h, clamp(a.cur.p - step(), bLo, bHi), gravity, false, true);
+    b.arc(h, clamp(b.cur.p + step(), bLo, bHi), gravity, true, true);
+    hold('land', 'land', 0.28);
+  };
+
+  const chase = (): void => {
+    const gap = b.cur.p - a.cur.p;
+    // Whoever has room to run away runs (the left cat to the left, the right cat to the right); the other follows.
+    const need = Math.min(0.14, bw / 3);
+    const aRoom = a.cur.p - bLo;
+    const bRoom = bHi - b.cur.p;
+    const options = [aRoom >= need ? 'a' : '', bRoom >= need ? 'b' : ''].filter(Boolean);
+    if (options.length === 0 || gap < 0.05) return;
+    const runnerIsA = options[Math.floor(rand() * options.length)] === 'a';
+    const room = runnerIsA ? aRoom : bRoom;
+    const dist = range(Math.min(0.12, room), Math.min(0.3, room));
+    const dir = runnerIsA ? -1 : 1;
+    const dur = dist / (SPEED.run * 0.92);
+    a.moveDur('run', a.cur.p + dir * dist, dur);
+    b.moveDur('run', b.cur.p + dir * dist, dur);
+  };
+
+  const backOff = (): void => {
+    const da = range(0.04, 0.1);
+    const db = range(0.04, 0.1);
+    together('walk', 'walk', clamp(a.cur.p - da, bLo, bHi), clamp(b.cur.p + db, bLo, bHi), SPEED.walk, 'each');
+  };
+
+  hold('idle', 'idle', range(1, 2));
+  let guard = 0;
+  while ((t() < target || clouds === 0) && guard++ < 40) {
+    stalk();
+    hold('hiss', 'hiss', range(1.4, 2.4));
+    if (rand() < 0.6) {
+      // A swat exchange: one swings while the other hisses, then the other way round.
+      hold('swipe', 'hiss', range(1.2, 1.8));
+      hold('hiss', 'swipe', range(1.2, 1.8));
+    }
+    fightCloud();
+    const r = rand();
+    if (r < 0.35) {
+      backOff();
+      hold('hiss', 'hiss', range(1, 1.8));
+    } else if (r < 0.6) {
+      backOff();
+      hold('idle', 'idle', range(1, 2));
+    } else if (r < 0.85) {
+      chase();
+      hold('hiss', 'hiss', range(1, 1.8));
+    } else {
+      hold('sit', 'sit', range(1.5, 3));
+    }
+  }
+  // Close the loop: go back to where the cycle started, then face each other as at the start.
+  together('run', 'run', pa0, pb0, SPEED.run, 'travel', true);
+  hold('idle', 'idle', range(1, 2));
+  a.segs[0].flip = a.cur.flip;
+  b.segs[0].flip = b.cur.flip;
+  const duration = Math.max(a.cur.t, b.cur.t);
+  const phase = range(0, duration);
+  const yarn = Math.floor(rand() * YARN_COLORS.length);
+  const make = (tl: Timeline, coat: number): CatPlan => ({ coat, yarn, duration, keys: tl.keys, segs: tl.segs, style: 'fighters', phase });
+  return [make(a, opts.coats[0]), make(b, opts.coats[1])];
+}
+
+/**
  * Plans a scene. `styles` is the style of each cat (see assignStyles); by default `cats` cats are dealt out
- * round-robin over all styles. Coats are varied across cats whatever their style.
+ * round-robin over all styles. Two Fighters next to each other in the list are planned as a pair. Coats are
+ * varied across cats whatever their style.
  */
 export function planScene(o: SceneOptions): CatPlan[] {
   const rand = mulberry32(o.seed);
@@ -384,10 +591,28 @@ export function planScene(o: SceneOptions): CatPlan[] {
     const j = Math.floor(rand() * (i + 1));
     [order[i], order[j]] = [order[j], order[i]];
   }
+  const plans: CatPlan[] = [];
   let climberSlot = 0;
-  return styles.map((style, i) =>
-    planCat(rand, { scale: o.scale, heightPx: o.heightPx, style, coat: order[i % order.length], slot: style === 'climber' ? climberSlot++ : 0 })
-  );
+  // Pairs spread over the width, each in its own band.
+  let pairs = 0;
+  for (let i = 0; i < styles.length; i++) {
+    if (styles[i] === 'fighters' && styles[i + 1] === 'fighters') {
+      pairs++;
+      i++;
+    }
+  }
+  let pairIndex = 0;
+  for (let i = 0; i < styles.length; i++) {
+    const coat = order[i % order.length];
+    if (styles[i] === 'fighters' && styles[i + 1] === 'fighters') {
+      const band: Band = pairBand(pairIndex++, pairs);
+      plans.push(...planPair(rand, { scale: o.scale, heightPx: o.heightPx, coats: [coat, order[(i + 1) % order.length]], band }));
+      i++;
+    } else {
+      plans.push(planCat(rand, { scale: o.scale, heightPx: o.heightPx, style: styles[i], coat, slot: styles[i] === 'climber' ? climberSlot++ : 0 }));
+    }
+  }
+  return plans;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -403,18 +628,19 @@ export function sceneMetrics(scale: number): { c0: number; span: number } {
 }
 
 /** Position of a plan at time t (linear between keyframes). */
-export function positionAt(keys: readonly Keyframe[], t: number): { p: number; y: number } {
-  if (t <= keys[0].t) return { p: keys[0].p, y: keys[0].y };
+export function positionAt(keys: readonly Keyframe[], t: number): { p: number; y: number; dx: number } {
+  if (t <= keys[0].t) return { p: keys[0].p, y: keys[0].y, dx: keys[0].dx ?? 0 };
   for (let i = 1; i < keys.length; i++) {
     if (t <= keys[i].t) {
       const a = keys[i - 1];
       const b = keys[i];
       const u = b.t === a.t ? 1 : (t - a.t) / (b.t - a.t);
-      return { p: a.p + (b.p - a.p) * u, y: a.y + (b.y - a.y) * u };
+      const dxa = a.dx ?? 0;
+      return { p: a.p + (b.p - a.p) * u, y: a.y + (b.y - a.y) * u, dx: dxa + ((b.dx ?? 0) - dxa) * u };
     }
   }
   const last = keys[keys.length - 1];
-  return { p: last.p, y: last.y };
+  return { p: last.p, y: last.y, dx: last.dx ?? 0 };
 }
 
 /**
@@ -424,11 +650,16 @@ export function positionAt(keys: readonly Keyframe[], t: number): { p: number; y
 export function stepKeys(keys: readonly Keyframe[], ticks: number, hz = SCENE_TICK_HZ): Keyframe[] {
   const out: Keyframe[] = [];
   for (let i = 0; i < ticks; i++) {
-    const { p, y } = positionAt(keys, i / hz);
+    const { p, y, dx } = positionAt(keys, i / hz);
     const q = Math.round(p * 1000) / 1000;
     const h = Math.round(y);
+    const d = Math.round(dx);
     const prev = out[out.length - 1];
-    if (!prev || prev.p !== q || prev.y !== h) out.push({ t: i / hz, p: q, y: h });
+    if (!prev || prev.p !== q || prev.y !== h || (prev.dx ?? 0) !== d) {
+      const k: Keyframe = { t: i / hz, p: q, y: h };
+      if (d !== 0) k.dx = d;
+      out.push(k);
+    }
   }
   return out;
 }
@@ -491,7 +722,7 @@ function catMarkup(plan: CatPlan, scale: number, idx: number): CatCss {
   const box = FRAME_SIZE * scale;
 
   const move = stepKeys(plan.keys, ticks).map((k) => {
-    const x = `calc(${f(k.p * 100)}% - ${f(c0 + k.p * span)}px)`;
+    const x = `calc(${f(k.p * 100)}% - ${f(c0 + k.p * span - (k.dx ?? 0))}px)`;
     const y = `calc(100% - ${f(k.y + FEET_ROWS * scale)}px)`;
     return `${pct(k.t / D)}%{transform:translate(${x},${y})}`;
   });

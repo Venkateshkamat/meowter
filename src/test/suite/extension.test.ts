@@ -163,6 +163,18 @@ function assertTimer(actual: number, fileValue: number, msg: string): void {
   assert.ok(actual >= fileValue && actual < fileValue + 5000, `${msg}: ${actual} should be ${fileValue} plus at most a few seconds`);
 }
 
+/**
+ * The real-DOM checks need a window the OS actually renders: an unfocused (occluded) window may not paint the
+ * decorations at all, which would be a false failure. Skips the test (with a log line) in that case, like the
+ * refocus test does.
+ */
+function requireFocusedWindow(test: Mocha.Context): void {
+  if (!vscode.window.state.focused) {
+    console.log(`window not focused; skipping the real-DOM check "${test.test?.title ?? ''}"`);
+    test.skip();
+  }
+}
+
 async function waitFor(cond: () => boolean, what: string, timeoutMs = 15000): Promise<void> {
   const start = Date.now();
   while (!cond()) {
@@ -216,12 +228,14 @@ suite('Meowter extension', () => {
     const cfg = vscode.workspace.getConfiguration('meowter');
     assert.strictEqual(cfg.inspect('breakIntervalMinutes')?.defaultValue, 50);
     assert.strictEqual(cfg.inspect('idleThresholdMinutes')?.defaultValue, 5);
-    assert.strictEqual(cfg.inspect('catCount')?.defaultValue, 8);
+    assert.strictEqual(cfg.inspect('catCount')?.defaultValue, 6, 'six cats: one of each style');
+    const ext = vscode.extensions.getExtension(EXT_ID);
+    assert.strictEqual(ext?.packageJSON.contributes.configuration.properties['meowter.catCount'].minimum, 2, 'two cats at least, so a pair can fight');
   });
 
   test('the styles setting has a checkbox per style, all on by default', () => {
     const cfg = vscode.workspace.getConfiguration('meowter');
-    assert.deepStrictEqual(cfg.inspect('styles')?.defaultValue, { wanderer: true, climber: true, bouncer: true, yarnChaser: true });
+    assert.deepStrictEqual(cfg.inspect('styles')?.defaultValue, { wanderer: true, climber: true, bouncer: true, yarnChaser: true, fighters: true });
     const ext = vscode.extensions.getExtension(EXT_ID);
     const props = ext?.packageJSON.contributes.configuration.properties['meowter.styles'];
     assert.deepStrictEqual(Object.keys(props.properties), [...STYLE_NAMES]);
@@ -461,10 +475,11 @@ suite('Meowter extension', () => {
   suite('cat styles setting', () => {
     test('over the code: the cats are dealt out round-robin to the styles that are on', async () => {
       await openCode('meowter-test-a.ts', 80);
-      const want = Math.min(vscode.workspace.getConfiguration('meowter').get<number>('catCount') ?? 8, 8);
+      const want = Math.min(vscode.workspace.getConfiguration('meowter').get<number>('catCount') ?? 6, 8);
+      assert.strictEqual(want, 6, 'six cats by default');
       await api.startBreakNow();
       await waitFor(() => api.getOverlayState().editors.length === 1, 'the editor is decorated');
-      assert.deepStrictEqual(api.getOverlayState().editors[0].styles, assignStyles(want));
+      assert.deepStrictEqual(api.getOverlayState().editors[0].styles, ['wanderer', 'climber', 'bouncer', 'yarnChaser', 'fighters', 'fighters']);
       await withStyles({ climber: false, yarnChaser: false }, async () => {
         // The setting applies live: the decorations are rebuilt for the new assignment.
         await waitFor(
@@ -472,7 +487,7 @@ suite('Meowter extension', () => {
           'the new styles are applied',
           5000
         );
-        assert.ok(api.getOverlayState().editors[0].styles.every((s) => s === 'wanderer' || s === 'bouncer'));
+        assert.ok(api.getOverlayState().editors[0].styles.every((s) => s === 'wanderer' || s === 'bouncer' || s === 'fighters'));
       });
       await waitFor(() => JSON.stringify(api.getOverlayState().editors[0]?.styles) === JSON.stringify(assignStyles(want)), 'back to all styles', 5000);
     });
@@ -481,10 +496,10 @@ suite('Meowter extension', () => {
       await openCode('meowter-test-a.ts', 80);
       await api.startBreakNow();
       await waitFor(() => api.getOverlayState().editors.length === 1, 'the editor is decorated');
-      await withStyles({ wanderer: false, bouncer: false, yarnChaser: false }, async () => {
+      await withStyles({ wanderer: false, bouncer: false, yarnChaser: false, fighters: false }, async () => {
         await waitFor(() => api.getOverlayState().editors[0]?.styles.every((s) => s === 'climber'), 'only climbers', 5000);
       });
-      await withStyles({ wanderer: false, climber: false, bouncer: false, yarnChaser: false }, async () => {
+      await withStyles({ wanderer: false, climber: false, bouncer: false, yarnChaser: false, fighters: false }, async () => {
         await waitFor(() => api.getOverlayState().editors[0]?.styles.every((s) => s === 'wanderer'), 'only wanderers', 5000);
         assert.ok(api.getOverlayState().editors[0].styles.length >= 1);
       });
@@ -503,6 +518,73 @@ suite('Meowter extension', () => {
       }
     });
 
+    test('Fighters: a pair over the code, from the Fighters-only setting', async () => {
+      await openCode('meowter-test-a.ts', 80);
+      const cfg = vscode.workspace.getConfiguration('meowter');
+      await cfg.update('catCount', 3, vscode.ConfigurationTarget.Global);
+      try {
+        await withStyles({ wanderer: false, climber: false, bouncer: false, yarnChaser: false }, async () => {
+          await api.startBreakNow();
+          // Three cats with only Fighters on: a pair, and the odd cat is a Wanderer.
+          await waitFor(() => api.getOverlayState().editors[0]?.cats === 3, 'three cats');
+          assert.deepStrictEqual(api.getOverlayState().editors[0].styles, ['fighters', 'fighters', 'wanderer']);
+        });
+      } finally {
+        await cfg.update('catCount', undefined, vscode.ConfigurationTarget.Global);
+      }
+    });
+
+    test('the cat count is at least two, whatever the setting says', async () => {
+      await openCode('meowter-test-a.ts', 80);
+      const cfg = vscode.workspace.getConfiguration('meowter');
+      await cfg.update('catCount', 1, vscode.ConfigurationTarget.Global);
+      try {
+        await api.startBreakNow();
+        await waitFor(() => api.getOverlayState().editors[0]?.cats === 2, 'two cats even though 1 is set');
+        assert.deepStrictEqual(api.getOverlayState().editors[0].styles, ['wanderer', 'climber']);
+      } finally {
+        await cfg.update('catCount', undefined, vscode.ConfigurationTarget.Global);
+      }
+    });
+
+    test('a fighting pair is never split across two editors', async () => {
+      // (own file names: another test reopens meowter-test-b.ts with a different length, and a document that is
+      // still open in the editor would keep the old text)
+      await openCode('meowter-test-pair-a.ts', 80);
+      await openCode('meowter-test-pair-b.ts', 80, vscode.ViewColumn.Beside);
+      const cfg = vscode.workspace.getConfiguration('meowter');
+      await cfg.update('catCount', 5, vscode.ConfigurationTarget.Global);
+      try {
+        await api.startBreakNow();
+        await waitFor(() => api.getOverlayState().editors.length === 2 && api.getOverlayState().editors.every((e) => e.cats === 5), 'five cats on each editor');
+        const lists = api.getOverlayState().editors.map((e) => e.styles);
+        for (const list of lists) {
+          assert.strictEqual(list.length, 5);
+          assert.strictEqual(list.filter((s) => s === 'fighters').length % 2, 0, `no split pair: ${list}`);
+        }
+        assert.strictEqual(lists.flat().filter((s) => s === 'fighters').length, 2, 'the pair is whole, on one editor');
+      } finally {
+        await cfg.update('catCount', undefined, vscode.ConfigurationTarget.Global);
+      }
+    });
+
+    test('in the cat tab a Fighters-only setting makes a fighting pair', async () => {
+      await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+      const cfg = vscode.workspace.getConfiguration('meowter');
+      await cfg.update('catCount', 2, vscode.ConfigurationTarget.Global);
+      try {
+        await withStyles({ wanderer: false, climber: false, bouncer: false, yarnChaser: false }, async () => {
+          await api.startBreakNow();
+          assert.strictEqual(api.getBreakMode(), 'tab');
+          await waitFor(() => api.getWebviewReport().ready, 'cat tab ready');
+          assert.deepStrictEqual(api.getWebviewReport().styles, ['fighters', 'fighters']);
+          await api.pause();
+        });
+      } finally {
+        await cfg.update('catCount', undefined, vscode.ConfigurationTarget.Global);
+      }
+    });
+
     test('in the cat tab the page deals its cats out to the same styles (read at the start of the break)', async () => {
       await vscode.commands.executeCommand('workbench.action.closeAllEditors');
       await withStyles({ wanderer: false, bouncer: false }, async () => {
@@ -510,7 +592,7 @@ suite('Meowter extension', () => {
         assert.strictEqual(api.getBreakMode(), 'tab');
         await waitFor(() => api.getWebviewReport().ready, 'cat tab ready');
         const report = api.getWebviewReport();
-        const want = vscode.workspace.getConfiguration('meowter').get<number>('catCount') ?? 8;
+        const want = vscode.workspace.getConfiguration('meowter').get<number>('catCount') ?? 6;
         assert.deepStrictEqual(report.styles, assignStyles(want, enabledStyles({ wanderer: false, bouncer: false })));
         await api.pause();
       });
@@ -544,7 +626,7 @@ suite('Meowter extension', () => {
     test('cats per editor follow the catCount setting (capped for performance)', async () => {
       await openCode('meowter-test-a.ts', 120);
       await api.startBreakNow();
-      const want = Math.min(vscode.workspace.getConfiguration('meowter').get<number>('catCount') ?? 8, 8);
+      const want = Math.min(vscode.workspace.getConfiguration('meowter').get<number>('catCount') ?? 6, 8);
       assert.strictEqual(api.getOverlayState().editors[0].cats, want);
     });
 
@@ -669,6 +751,7 @@ suite('Meowter extension', () => {
     });
 
     test('the overlay covers the whole visible text width of the editor, even over short lines (real DOM)', async function () {
+      requireFocusedWindow(this);
       await openShortLines('meowter-test-short.ts', 120);
       await api.startBreakNow();
       let measures: OverlayMeasure[] | undefined;
@@ -702,6 +785,7 @@ suite('Meowter extension', () => {
     });
 
     test('in split editors every overlay spans its own editor (real DOM)', async function () {
+      requireFocusedWindow(this);
       await openShortLines('meowter-test-a.ts', 90);
       await openShortLines('meowter-test-b.ts', 90, vscode.ViewColumn.Beside);
       await api.startBreakNow();
@@ -732,6 +816,7 @@ suite('Meowter extension', () => {
     });
 
     test('in a narrow split with long lines the overlay is capped to about the visible width (real DOM)', async function () {
+      requireFocusedWindow(this);
       // 120-character lines: wider than a split editor, so Monaco's scroll width exceeds the visible width.
       await openLongLines('meowter-test-a.ts', 90);
       await openLongLines('meowter-test-b.ts', 90, vscode.ViewColumn.Beside);
@@ -759,6 +844,7 @@ suite('Meowter extension', () => {
     });
 
     test('short lines with the sidebar hidden: the overlay is the whole text area, not an estimate (real DOM)', async function () {
+      requireFocusedWindow(this);
       await vscode.commands.executeCommand('workbench.action.closeSidebar');
       try {
         await openShortLines('meowter-test-short.ts', 120);
@@ -779,6 +865,7 @@ suite('Meowter extension', () => {
     });
 
     test('typing a very long line mid-break switches the overlay to the cap (real DOM)', async function () {
+      requireFocusedWindow(this);
       const editor = await openShortLines('meowter-test-short.ts', 60);
       await api.startBreakNow();
       let measures = await waitForMeasures(1);
@@ -827,6 +914,7 @@ suite('Meowter extension', () => {
     });
 
     test('typing a long line and undoing it keeps the cap: the layer never shrinks (real DOM)', async function () {
+      requireFocusedWindow(this);
       const editor = await openShortLines('meowter-test-short.ts', 60);
       await api.startBreakNow();
       const measures = await waitForMeasures(1);

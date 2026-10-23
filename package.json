@@ -58,10 +58,10 @@
         },
         "meowter.catCount": {
           "type": "integer",
-          "default": 8,
-          "minimum": 1,
+          "default": 6,
+          "minimum": 2,
           "maximum": 30,
-          "description": "Number of cats shown during a break."
+          "description": "Number of cats shown during a break (a fighting pair counts as two)."
         },
         "meowter.styles": {
           "type": "object",
@@ -70,7 +70,8 @@
             "wanderer": true,
             "climber": true,
             "bouncer": true,
-            "yarnChaser": true
+            "yarnChaser": true,
+            "fighters": true
           },
           "properties": {
             "wanderer": {
@@ -92,9 +93,14 @@
               "type": "boolean",
               "default": true,
               "description": "Chases and bats a ball of yarn along the floor."
+            },
+            "fighters": {
+              "type": "boolean",
+              "default": true,
+              "description": "A pair of cats squares up and brawls in a dust cloud."
             }
           },
-          "markdownDescription": "Which movement styles the cats use. The cats of a break are dealt out to the enabled styles in turn (Wanderer, Climber, Bouncer, Yarn chaser), so with few cats each style gets one first. If every style is switched off, all cats are Wanderers."
+          "markdownDescription": "Which movement styles the cats use. The cats of a break are dealt out to the enabled styles in turn (Wanderer, Climber, Bouncer, Yarn chaser, Fighters), so with few cats each style gets one first. Fighters always take two cats at a time (a pair fights). If every style is switched off, all cats are Wanderers."
         }
       }
     },

@@ -1,7 +1,7 @@
 import * as assert from 'assert';
-import { assignStyles, CatStyle, enabledStyles, STYLE_NAMES } from '../../catStyles';
+import { assignStyles, CatStyle, enabledStyles, pairBand, STYLE_NAMES } from '../../catStyles';
 import { ANIMATIONS, CONTENT_MAX_COL, CONTENT_MIN_COL, COATS, FEET_ROWS, FRAME_SIZE, frameNames, SCENE_TICK_HZ } from '../../catArt';
-import { buildSceneSvg, CatPlan, HOP_MAX_ROWS, MAX_ARC_SPEED, SPEED, cellTimeline, cycleTicks, mulberry32, planCat, planCells, planScene, positionAt, sceneDataUri, sceneMetrics, stepKeys } from '../../catScene';
+import { buildSceneSvg, CatPlan, FIGHT_ROLL_SPEED, HOP_MAX_ROWS, MAX_ARC_SPEED, planPair, SPEED, cellTimeline, cycleTicks, mulberry32, planCat, planCells, planScene, positionAt, sceneDataUri, sceneMetrics, stepKeys } from '../../catScene';
 
 function checkXml(rawXml: string): Map<string, number> {
   const xml = rawXml.replace(/<style>[^<]*<\/style>/g, '<style></style>');
@@ -76,17 +76,19 @@ describe('catScene planning', () => {
     }
   });
 
-  it('deals the styles out round-robin and records each plan\'s style', () => {
-    const plans = planScene({ ...BASE, cats: 6, seed: 11 });
-    assert.deepStrictEqual(plans.map((p) => p.style), ['wanderer', 'climber', 'bouncer', 'yarnChaser', 'wanderer', 'climber']);
-    const one = planScene({ ...BASE, cats: 2, seed: 11 });
-    assert.deepStrictEqual(one.map((p) => p.style), ['wanderer', 'climber'], 'a small count gets one of each first');
+  it('deals the styles out round-robin and records each plan\'s style (a fighting pair takes two cats)', () => {
+    const plans = planScene({ ...BASE, cats: 8, seed: 11 });
+    assert.deepStrictEqual(plans.map((p) => p.style), ['wanderer', 'climber', 'bouncer', 'yarnChaser', 'fighters', 'fighters', 'wanderer', 'climber']);
+    const two = planScene({ ...BASE, cats: 2, seed: 11 });
+    assert.deepStrictEqual(two.map((p) => p.style), ['wanderer', 'climber'], 'a small count gets one of each first');
+    const six = planScene({ ...BASE, cats: 6, seed: 11 });
+    assert.deepStrictEqual(six.map((p) => p.style), ['wanderer', 'climber', 'bouncer', 'yarnChaser', 'fighters', 'fighters'], 'six cats: one of each');
   });
 
   it('honours an explicit per-cat style list (disabled styles, all disabled)', () => {
-    const plans = planScene({ ...BASE, cats: 99, seed: 2, styles: assignStyles(5, enabledStyles({ climber: false, yarnChaser: false })) });
+    const plans = planScene({ ...BASE, cats: 99, seed: 2, styles: assignStyles(5, enabledStyles({ climber: false, yarnChaser: false, fighters: false })) });
     assert.deepStrictEqual(plans.map((p) => p.style), ['wanderer', 'bouncer', 'wanderer', 'bouncer', 'wanderer']);
-    const fallback = planScene({ ...BASE, cats: 3, seed: 2, styles: assignStyles(3, enabledStyles({ wanderer: false, climber: false, bouncer: false, yarnChaser: false })) });
+    const fallback = planScene({ ...BASE, cats: 3, seed: 2, styles: assignStyles(3, enabledStyles({ wanderer: false, climber: false, bouncer: false, yarnChaser: false, fighters: false })) });
     assert.ok(fallback.every((p) => p.style === 'wanderer'));
     fallback.forEach((p) => checkPlan(p, BASE.scale, BASE.heightPx));
   });
@@ -119,7 +121,7 @@ describe('catScene planning', () => {
             assert.ok(x === 0 || x === 1, `climbing at the wall (p=${x})`);
             assert.strictEqual(seg.flip, x === 0, 'faces the wall');
           }
-          if (seg.variant === 'walk' || seg.variant === 'run' || seg.variant === 'chase') {
+          if (p.style !== 'fighters' && (seg.variant === 'walk' || seg.variant === 'run' || seg.variant === 'chase')) {
             const i0 = p.keys.findIndex((k) => Math.abs(k.t - seg.t0) < 1e-9);
             const i1 = p.keys.findIndex((k) => Math.abs(k.t - seg.t1) < 1e-9);
             const dp = p.keys[i1].p - p.keys[i0].p;
@@ -154,7 +156,7 @@ describe('catScene stepping and cells', () => {
         assert.ok(steps[i].t > steps[i - 1].t);
         const tick = steps[i].t * SCENE_TICK_HZ;
         assert.ok(Math.abs(tick - Math.round(tick)) < 1e-9, 'on the clock');
-        assert.ok(steps[i].p !== steps[i - 1].p || steps[i].y !== steps[i - 1].y, 'no duplicate samples');
+        assert.ok(steps[i].p !== steps[i - 1].p || steps[i].y !== steps[i - 1].y || (steps[i].dx ?? 0) !== (steps[i - 1].dx ?? 0), 'no duplicate samples');
       }
       assert.ok(steps[steps.length - 1].t < ticks / SCENE_TICK_HZ);
       const mid = positionAt(p.keys, p.duration / 2);
@@ -292,8 +294,8 @@ describe('movement styles (over-code scene)', () => {
   const maxYOf = (p: CatPlan): number => Math.max(...p.keys.map((k) => k.y));
   const topRoom = BASE.heightPx - 24 * BASE.scale;
 
-  it('every style plans valid, seamless looping cycles (also in a low box)', () => {
-    for (const style of STYLE_NAMES) {
+  it('every single-cat style plans valid, seamless looping cycles (also in a low box)', () => {
+    for (const style of STYLE_NAMES.filter((n) => n !== 'fighters')) {
       plansOf(style).forEach((p) => {
         assert.strictEqual(p.style, style);
         checkPlan(p, BASE.scale, BASE.heightPx);
@@ -386,7 +388,7 @@ describe('movement styles (over-code scene)', () => {
       jump: MAX_ARC_SPEED,
       fall: MAX_ARC_SPEED
     };
-    for (const style of STYLE_NAMES) {
+    for (const style of STYLE_NAMES.filter((n) => n !== 'fighters')) {
       for (const [scale, heightPx] of [[4, 480], [3, 280], [4, 140]] as const) {
         for (let seed = 1; seed <= 150; seed++) {
           const p = planCat(mulberry32(seed), { scale, heightPx, style, coat: 0 });
@@ -437,11 +439,241 @@ describe('movement styles (over-code scene)', () => {
   });
 
   it('the scene SVG of each style is valid and animated', () => {
-    for (const style of STYLE_NAMES) {
+    for (const style of STYLE_NAMES.filter((n) => n !== 'fighters')) {
       const plans = [planCat(mulberry32(3), { ...BASE, style, coat: 0 })];
       const svg = buildSceneSvg(plans, BASE.scale);
       checkXml(svg);
       assert.ok(svg.includes('@keyframes m0'));
     }
+  });
+});
+
+describe('Fighters (a fighting pair, over the code)', () => {
+  const SEEDS = Array.from({ length: 30 }, (_, i) => i + 1);
+  const pair = (seed: number, scale = 4, heightPx = 480): [CatPlan, CatPlan] =>
+    planPair(mulberry32(seed), { scale, heightPx, coats: [seed % COATS.length, (seed + 1) % COATS.length] });
+  const at = (p: CatPlan, t: number): number => positionAt(p.keys, t).p;
+  const kinds = (p: CatPlan): string[] => p.segs.map((s) => s.variant);
+
+  it('are two cats of style fighters on one shared timeline, in step', () => {
+    for (const seed of SEEDS) {
+      const [a, b] = pair(seed);
+      assert.strictEqual(a.style, 'fighters');
+      assert.strictEqual(b.style, 'fighters');
+      assert.strictEqual(a.duration, b.duration);
+      assert.strictEqual(a.phase, b.phase, 'they start the cycle together');
+      assert.strictEqual(a.segs.length, b.segs.length);
+      a.segs.forEach((seg, i) => {
+        assert.ok(Math.abs(seg.t0 - b.segs[i].t0) < 1e-6 && Math.abs(seg.t1 - b.segs[i].t1) < 1e-6, `segment ${i} is in step`);
+      });
+      assert.notStrictEqual(a.coat, b.coat, 'two different coats');
+    }
+  });
+
+  it('plan valid, continuous looping cycles (also in a low box)', () => {
+    for (const seed of SEEDS) {
+      pair(seed).forEach((p) => checkPlan(p, 4, 480));
+      pair(seed, 3, 14 * 20).forEach((p) => checkPlan(p, 3, 14 * 20));
+    }
+  });
+
+  it('the loop closes smoothly: both end where they started, facing each other as at the start', () => {
+    for (const seed of SEEDS) {
+      const [a, b] = pair(seed);
+      for (const p of [a, b]) {
+        assert.ok(Math.abs(p.keys[0].p - p.keys[p.keys.length - 1].p) < 1e-6);
+        assert.strictEqual(p.segs[0].flip, p.segs[p.segs.length - 1].flip);
+      }
+      assert.strictEqual(a.segs[0].flip, a.keys[0].p > b.keys[0].p, 'cat A looks at cat B at the start');
+      assert.strictEqual(b.segs[0].flip, b.keys[0].p > a.keys[0].p);
+      assert.deepStrictEqual(kinds(a)[0], 'idle');
+      assert.deepStrictEqual(kinds(a)[a.segs.length - 1], 'idle');
+    }
+  });
+
+  it('do the whole show: stalk, hiss, swat, fight cloud, break apart, back off or chase', () => {
+    const seen = new Set<string>();
+    let clouds = 0;
+    for (const seed of SEEDS) {
+      const [a, b] = pair(seed);
+      kinds(a).forEach((k) => seen.add(k));
+      kinds(b).forEach((k) => seen.add(k));
+      const n = kinds(a).filter((k) => k === 'fight').length;
+      assert.ok(n >= 1, `seed ${seed} has a fight cloud`);
+      clouds += n;
+    }
+    for (const want of ['walk', 'hiss', 'swipe', 'run', 'fight', 'jump', 'fall', 'land', 'idle', 'sit']) {
+      assert.ok(seen.has(want), `a fight includes ${want}`);
+    }
+    assert.ok(clouds >= SEEDS.length);
+  });
+
+  it('both cats stay on the floor; only the break-apart hop leaves it, and only a little', () => {
+    for (const seed of SEEDS) {
+      for (const p of pair(seed)) {
+        for (const seg of p.segs) {
+          const ys = p.keys.filter((k) => k.t >= seg.t0 - 1e-9 && k.t <= seg.t1 + 1e-9).map((k) => k.y);
+          if (seg.variant === 'jump' || seg.variant === 'fall') {
+            assert.ok(Math.max(...ys) <= 0.8 * (480 - 24 * 4) + 1e-6, 'a hop, not a flight');
+          } else {
+            assert.ok(Math.max(...ys) < 1e-9, `${seg.variant} is on the floor`);
+          }
+        }
+      }
+    }
+  });
+
+  /** Content left edge of a cat in px in an editor of width `w` (what the scene's CSS does with p and dx). */
+  const xAt = (p: CatPlan, t: number, w: number, scale: number): number => {
+    const pos = positionAt(p.keys, t);
+    return pos.p * (w - sceneMetrics(scale).span) + pos.dx;
+  };
+
+  it('face each other while hissing, swatting and fighting: A is the left cat and looks right, B looks left', () => {
+    for (const seed of SEEDS) {
+      const [a, b] = pair(seed);
+      a.segs.forEach((seg, i) => {
+        if (!['hiss', 'swipe', 'fight', 'idle', 'sit'].includes(seg.variant)) return;
+        assert.strictEqual(seg.flip, false, `A looks right during ${seg.variant}`);
+        assert.strictEqual(b.segs[i].flip, true, `B looks left during ${seg.variant}`);
+        const t = (seg.t0 + seg.t1) / 2;
+        assert.ok(xAt(a, t, 800, 4) <= xAt(b, t, 800, 4) + 1e-6, 'A stands left of B');
+      });
+    }
+  });
+
+  it('in a face-off the two sprites never overlap and the snouts do not touch, at any editor width and scale', () => {
+    for (const scale of [3, 4, 5]) {
+      const { span } = sceneMetrics(scale);
+      for (const w of [340, 400, 480, 600, 720, 900, 1280, 1920, 2560]) {
+        for (const seed of SEEDS) {
+          const [a, b] = planPair(mulberry32(seed), { scale, heightPx: 480, coats: [0, 1] });
+          a.segs.forEach((seg, i) => {
+            if (seg.variant !== 'hiss' && seg.variant !== 'swipe') return;
+            const t = (seg.t0 + seg.t1) / 2;
+            const faceOff = (positionAt(a.keys, t).dx ?? 0) !== 0; // (the hiss after a fight happens a little apart, not face to face: at most a sliver of overlap at 600px or more)
+            if (!faceOff && w < 600) return;
+            const gap = xAt(b, t, w, scale) - xAt(a, t, w, scale);
+            assert.ok(gap >= span * (faceOff ? 1.15 : 0.9) - 1e-6, `${seg.variant} at ${w}px, scale ${scale}: boxes ${gap.toFixed(1)}px apart, sprites are ${span}px wide`);
+            void b.segs[i];
+          });
+        }
+      }
+    }
+  });
+
+  it('both cats stay inside the editor in a face-off (the pixel offsets never push one out)', () => {
+    for (const scale of [3, 4, 5]) {
+      const { span } = sceneMetrics(scale);
+      for (const w of [420, 600, 900, 1600].filter((x) => x >= 4.2 * span)) {
+        for (const seed of SEEDS) {
+          for (const p of planPair(mulberry32(seed), { scale, heightPx: 480, coats: [0, 1] })) {
+            for (let tt = 0; tt < p.duration; tt += 0.25) {
+              const x = xAt(p, tt, w, scale);
+              assert.ok(x >= -1 && x <= w - span + 1, `x ${x.toFixed(1)} in ${w}px at scale ${scale}`);
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it('pairs keep to their own band of the width, spread from left to right', () => {
+    for (const [pairsCount, cats] of [[2, 4], [3, 6]] as const) {
+      for (let seed = 1; seed <= 12; seed++) {
+        const plans = planScene({ ...BASE, cats, seed, styles: Array<CatStyle>(cats).fill('fighters') });
+        assert.strictEqual(plans.length, cats);
+        const centres: number[] = [];
+        for (let k = 0; k < pairsCount; k++) {
+          const [lo, hi] = pairBand(k, pairsCount);
+          const mine = [plans[2 * k], plans[2 * k + 1]];
+          for (const p of mine) {
+            for (const key of p.keys) assert.ok(key.p >= lo - 1e-9 && key.p <= hi + 1e-9, `pair ${k} of ${pairsCount} left its band [${lo}, ${hi}]: ${key.p}`);
+          }
+          const all = mine.flatMap((p) => p.keys.map((key) => key.p));
+          centres.push(all.reduce((x, y) => x + y, 0) / all.length);
+        }
+        for (let k = 1; k < centres.length; k++) assert.ok(centres[k] > centres[k - 1] + 0.1, `pairs are spread out: ${centres}`);
+      }
+    }
+  });
+
+  it('a lone pair gets the whole width', () => {
+    const seen = new Set<number>();
+    for (let seed = 1; seed <= 40; seed++) pair(seed)[0].keys.forEach((k) => seen.add(Math.floor(k.p * 4)));
+    assert.ok(seen.size >= 4, 'it uses all of the width over time');
+  });
+
+  it('after the cloud bursts the two cats are visibly apart within 0.3 s of the jump', () => {
+    for (const seed of SEEDS) {
+      const [a, b] = pair(seed);
+      a.segs.forEach((seg, i) => {
+        if (seg.variant !== 'jump') return;
+        const t = seg.t0 + 0.3;
+        const gap = xAt(b, t, 800, 4) - xAt(a, t, 800, 4);
+        assert.ok(gap >= sceneMetrics(4).span * 0.9, `seed ${seed}: ${gap.toFixed(0)}px apart 0.3s into the jump (sprite is ${sceneMetrics(4).span}px)`);
+        void b.segs[i];
+      });
+    }
+  });
+
+  it('the cats never cross: A stays left of B except inside the cloud', () => {
+    for (const seed of SEEDS) {
+      const [a, b] = pair(seed);
+      for (let t = 0; t < a.duration; t += 0.25) {
+        assert.ok(at(a, t) <= at(b, t) + 1e-9, `seed ${seed} t=${t}`);
+      }
+    }
+  });
+
+  it('keep the normal speed limits, loop closure included', () => {
+    const limit: Record<string, number> = {
+      walk: SPEED.walk,
+      run: SPEED.run,
+      chase: SPEED.chase,
+      jump: MAX_ARC_SPEED,
+      fall: MAX_ARC_SPEED,
+      fight: FIGHT_ROLL_SPEED
+    };
+    for (const [scale, heightPx] of [[4, 480], [3, 280], [4, 140]] as const) {
+      for (const seed of SEEDS.concat(Array.from({ length: 80 }, (_, i) => 100 + i))) {
+        for (const p of pair(seed, scale, heightPx)) {
+          for (const seg of p.segs) {
+            const ks = p.keys.filter((k) => k.t >= seg.t0 - 1e-9 && k.t <= seg.t1 + 1e-9);
+            const v = seg.t1 > seg.t0 ? Math.abs(ks[ks.length - 1].p - ks[0].p) / (seg.t1 - seg.t0) : 0;
+            const max = limit[seg.variant];
+            if (max === undefined) assert.ok(v < 1e-9, `${seg.variant} stands still`);
+            else assert.ok(v <= max * 1.05, `${seg.variant} speed ${v.toFixed(3)} > ${max} (seed ${seed}, ${heightPx}px)`);
+          }
+        }
+      }
+    }
+  });
+
+  it('show the new frames: hiss (arched back) and the fight cloud', () => {
+    const [a] = pair(3);
+    const cells = new Set(cellTimeline(a).map((c) => c.name));
+    assert.ok(cells.has('hiss0') && cells.has('hiss1'), 'both hiss frames are shown');
+    for (const f of ['fight0', 'fight1', 'fight2', 'fight3']) assert.ok(cells.has(f), `${f} is shown`);
+    assert.ok(cells.has('walk0') && cells.has('jumpLand'));
+  });
+
+  it('are drawn in the scene SVG like any other cat (two animations each, valid markup)', () => {
+    const plans = planScene({ ...BASE, cats: 6, seed: 9 });
+    const svg = buildSceneSvg(plans, BASE.scale);
+    const tags = checkXml(svg);
+    assert.strictEqual(tags.get('svg'), 1 + plans.length);
+    assert.ok(svg.includes('id="cell-fight0"') && svg.includes('id="cell-hiss0"'));
+    assert.strictEqual((svg.match(/animation:/g) ?? []).length, plans.length * 2, 'exactly two animations per cat');
+    // The pair is in step: the same cycle length and start delay.
+    const pairPlans = plans.filter((p) => p.style === 'fighters');
+    assert.strictEqual(pairPlans.length, 2);
+    assert.strictEqual(cycleTicks(pairPlans[0]), cycleTicks(pairPlans[1]));
+    assert.strictEqual(pairPlans[0].phase, pairPlans[1].phase);
+  });
+
+  it('differ from seed to seed (not the same fight every time)', () => {
+    const scripts = new Set(SEEDS.map((seed) => kinds(pair(seed)[0]).join(' ')));
+    assert.ok(scripts.size >= 20, `${scripts.size} different scripts`);
   });
 });

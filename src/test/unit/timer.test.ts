@@ -4,6 +4,8 @@ import {
   applyDelta,
   applyPause,
   applyTick,
+  DEFAULT_CAT_COUNT,
+  MIN_CAT_COUNT,
   canPause,
   formatStatusText,
   freshState,
@@ -181,8 +183,18 @@ describe('timer', () => {
       assert.strictEqual(normalizeMinutes('5', 50), 50);
       assert.strictEqual(normalizeMinutes(2.5, 50), 2.5);
       assert.strictEqual(normalizeCatCount(100), 30);
-      assert.strictEqual(normalizeCatCount(0), 1);
-      assert.strictEqual(normalizeCatCount(undefined), 8);
+      assert.strictEqual(normalizeCatCount(0), 2, 'the minimum is two, so a fighting pair always works');
+      assert.strictEqual(normalizeCatCount(1), 2);
+      assert.strictEqual(normalizeCatCount(-5), 2);
+      assert.strictEqual(normalizeCatCount(2), 2);
+      assert.strictEqual(normalizeCatCount(2.4), 2);
+      assert.strictEqual(normalizeCatCount(2.6), 3);
+      assert.strictEqual(normalizeCatCount(30), 30);
+      assert.strictEqual(normalizeCatCount(NaN), 6);
+      assert.strictEqual(normalizeCatCount('8'), 6);
+      assert.strictEqual(normalizeCatCount(undefined), 6, 'the default is six: one of each style');
+      assert.strictEqual(DEFAULT_CAT_COUNT, 6);
+      assert.strictEqual(MIN_CAT_COUNT, 2);
     });
     it('validates interval input', () => {
       assert.strictEqual(parseIntervalInput(' 45 '), 45);

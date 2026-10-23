@@ -23,7 +23,9 @@ type CatStyle = import('../catStyles').CatStyle;
     | 'land'
     | 'climb'
     | 'grab'
-    | 'bounce';
+    | 'bounce'
+    | 'hiss'
+    | 'fight';
 
   interface Ball {
     el: HTMLCanvasElement;
@@ -35,6 +37,25 @@ type CatStyle = import('../catStyles').CatStyle;
     roll: number;
     phase: number;
     color: number;
+  }
+
+  type PairPhase = 'rest' | 'stalk' | 'hiss' | 'swat' | 'lunge' | 'cloud' | 'burst' | 'break' | 'land' | 'backoff' | 'chase';
+
+  /** Two Fighters and the choreography they share: square up, hiss, swat, rush into a fight cloud, break apart... */
+  interface Pair {
+    a: Cat;
+    b: Cat;
+    /** The part of the width this pair keeps to (fractions of the free width), so pairs do not crowd one spot. */
+    band: readonly [number, number];
+    phase: PairPhase;
+    timer: number;
+    /** Whether this round already had a swat exchange; which half of the swat exchange is running (0 or 1). */
+    swatted: boolean;
+    swatHalf: 0 | 1;
+    /** Sideways roll of the fight cloud. */
+    rollVx: number;
+    /** The cat running away in a chase. */
+    runner: Cat | undefined;
   }
 
   interface Cat {
@@ -65,6 +86,8 @@ type CatStyle = import('../catStyles').CatStyle;
     climbs: number;
     /** A Climber on its way to a wall (1 = right, -1 = left), or 0. */
     seekWall: 1 | -1 | 0;
+    /** The fight this cat is in (Fighters come as a pair), or undefined. */
+    pair: Pair | undefined;
     ball: Ball | undefined;
   }
 
@@ -92,6 +115,7 @@ type CatStyle = import('../catStyles').CatStyle;
       ['jump', 3]
     ],
     bouncer: [['idle', 1]],
+    fighters: [['idle', 1]],
     yarnChaser: [
       ['chase', 40],
       ['idle', 8],
@@ -111,8 +135,8 @@ type CatStyle = import('../catStyles').CatStyle;
   }
 
   const stage = document.getElementById('stage') as HTMLDivElement;
-  const requested = parseInt(document.body.dataset.catCount ?? '8', 10);
-  const catCount = clamp(Number.isFinite(requested) ? requested : 8, 1, 30);
+  const requested = parseInt(document.body.dataset.catCount ?? '6', 10);
+  const catCount = clamp(Number.isFinite(requested) ? requested : 6, 2, 30);
 
   const SIZE = CatArt.FRAME_SIZE;
   const YARN_N = CatArt.YARN_SIZE + 2;
@@ -169,6 +193,10 @@ type CatStyle = import('../catStyles').CatStyle;
         return 'grab';
       case 'fall':
         return 'fall';
+      case 'hiss':
+        return 'hiss';
+      case 'fight':
+        return 'fight';
       default:
         return cat.vy < 0 ? 'jump' : 'fall';
     }
@@ -260,6 +288,9 @@ type CatStyle = import('../catStyles').CatStyle;
     cat.vx = 0;
     cat.vy = 0;
     cat.seekWall = 0;
+    if (cat.pair) {
+      return; // a fighter does what the fight asks (see stepPair)
+    }
     if (cat.style === 'bouncer') {
       startBounce(cat);
       return;
@@ -374,7 +405,271 @@ type CatStyle = import('../catStyles').CatStyle;
     setState(cat, 'bounce');
   }
 
+  // ---- Fighters: a pair of cats on the floor ----
+
+  /** How close two fighters stand when they face off (sprite box to sprite box): 1.15 sprite widths, so they never overlap. */
+  const faceOff = (): number => 1.15 * (CatArt.CONTENT_MAX_COL - CatArt.CONTENT_MIN_COL + 1) * scale;
+  /** The pair's band in px. */
+  const bandMin = (pair: Pair): number => minX() + pair.band[0] * Math.max(0, maxX() - minX());
+  const bandMax = (pair: Pair): number => minX() + pair.band[1] * Math.max(0, maxX() - minX());
+  /** The cloud and the break-away stay this far from the band's edges, so the two cats never end up on top of each other. */
+  const cloudMargin = (pair: Pair): number => Math.min(40 * scale, Math.max(0, (bandMax(pair) - bandMin(pair)) / 4));
+
+  function setFight(cat: Cat, state: State, vx: number): void {
+    setState(cat, state);
+    cat.vx = vx;
+    cat.vy = 0;
+  }
+
+  /** Both cats look at each other (the cat on the left looks right). */
+  function facePair(pair: Pair): void {
+    const left = pair.a.x <= pair.b.x ? pair.a : pair.b;
+    const right = left === pair.a ? pair.b : pair.a;
+    left.dir = 1;
+    right.dir = -1;
+  }
+
+  function enterPhase(pair: Pair, phase: PairPhase): void {
+    const { a, b } = pair;
+    const left = a.x <= b.x ? a : b;
+    const right = left === a ? b : a;
+    pair.phase = phase;
+    a.y = floorY();
+    b.y = floorY();
+    switch (phase) {
+      case 'rest':
+        facePair(pair);
+        setFight(a, 'idle', 0);
+        setFight(b, 'idle', 0);
+        pair.timer = rand(1, 2);
+        break;
+      case 'stalk': {
+        pair.swatted = false;
+        facePair(pair);
+        const speed = rand(12, 18) * scale;
+        setFight(left, 'walk', speed);
+        setFight(right, 'walk', -speed);
+        pair.timer = 10;
+        break;
+      }
+      case 'hiss':
+        facePair(pair);
+        setFight(a, 'hiss', 0);
+        setFight(b, 'hiss', 0);
+        pair.timer = rand(1.4, 2.4);
+        break;
+      case 'swat':
+        // One swings while the other hisses, then the other way round.
+        facePair(pair);
+        pair.swatHalf = 0;
+        setFight(a, 'swipe', 0);
+        setFight(b, 'hiss', 0);
+        pair.timer = rand(1.2, 1.8);
+        break;
+      case 'lunge': {
+        facePair(pair);
+        const speed = 48 * scale;
+        setFight(left, 'run', speed);
+        setFight(right, 'run', -speed);
+        pair.timer = 1 + Math.abs(a.x - b.x) / (2 * speed);
+        break;
+      }
+      case 'cloud': {
+        const mid = clamp((left.x + right.x) / 2, bandMin(pair) + cloudMargin(pair), bandMax(pair) - cloudMargin(pair));
+        a.x = mid;
+        b.x = mid;
+        a.dir = 1;
+        b.dir = -1;
+        pair.rollVx = (Math.random() < 0.5 ? -1 : 1) * rand(8, 16) * scale;
+        setFight(a, 'fight', 0);
+        setFight(b, 'fight', 0);
+        pair.timer = rand(2.6, 4.2);
+        break;
+      }
+      case 'burst': {
+        // The cloud bursts: the cats pull out of it a little way apart, so they are not on top of each other.
+        const v = (0.04 * Math.max(0, maxX() - minX())) / 0.35;
+        setFight(a, 'fight', -v);
+        setFight(b, 'fight', v);
+        pair.timer = 0.35;
+        break;
+      }
+      case 'break': {
+        // Both jump back, away from each other, still looking at each other.
+        const h = rand(18, 30) * scale;
+        for (const [cat, away] of [[a, -1], [b, 1]] as const) {
+          setFight(cat, 'jump', away * rand(36, 50) * scale);
+          cat.vy = -Math.sqrt(2 * gravity() * h);
+          cat.dir = away === -1 ? 1 : -1;
+        }
+        pair.timer = 99;
+        break;
+      }
+      case 'land':
+        facePair(pair);
+        setFight(a, 'land', 0);
+        setFight(b, 'land', 0);
+        pair.timer = 0.28;
+        break;
+      case 'backoff': {
+        // Back away, still facing each other.
+        facePair(pair);
+        const speed = rand(9, 14) * scale;
+        setFight(left, 'walk', -speed);
+        setFight(right, 'walk', speed);
+        left.dir = 1;
+        right.dir = -1;
+        pair.timer = rand(1.4, 2.4);
+        break;
+      }
+      case 'chase': {
+        // The cat with more room runs away from the other, which runs after it for a short way.
+        const roomLeft = left.x - bandMin(pair);
+        const roomRight = bandMax(pair) - right.x;
+        const runner = roomLeft > roomRight ? left : right;
+        const chaser = runner === left ? right : left;
+        const dir: 1 | -1 = runner === left ? -1 : 1;
+        const speed = 44 * scale;
+        pair.runner = runner;
+        setFight(runner, 'run', dir * speed);
+        setFight(chaser, 'run', dir * speed);
+        runner.dir = dir;
+        chaser.dir = dir;
+        pair.timer = rand(1.2, 2);
+        break;
+      }
+    }
+  }
+
+  /** What follows a break: another hiss, backing off, a chase or a rest. */
+  function afterBreak(pair: Pair): void {
+    const r = Math.random();
+    enterPhase(pair, r < 0.35 ? 'hiss' : r < 0.6 ? 'backoff' : r < 0.85 ? 'chase' : 'rest');
+  }
+
+  /** Runs the shared choreography of a fighting pair once per frame. */
+  function stepPair(pair: Pair, dt: number): void {
+    const { a, b } = pair;
+    pair.timer -= dt;
+    const gap = Math.abs(a.x - b.x);
+    switch (pair.phase) {
+      case 'rest':
+        if (pair.timer <= 0) {
+          enterPhase(pair, 'stalk');
+        }
+        break;
+      case 'stalk':
+        if (gap <= faceOff() || pair.timer <= 0) {
+          enterPhase(pair, 'hiss');
+        }
+        break;
+      case 'hiss':
+        if (pair.timer <= 0) {
+          if (gap > faceOff() * 1.5) {
+            enterPhase(pair, 'stalk');
+          } else if (!pair.swatted && Math.random() < 0.6) {
+            pair.swatted = true;
+            enterPhase(pair, 'swat');
+          } else {
+            enterPhase(pair, 'lunge');
+          }
+        }
+        break;
+      case 'swat':
+        if (pair.timer <= 0) {
+          if (pair.swatHalf === 0) {
+            pair.swatHalf = 1;
+            setFight(a, 'hiss', 0);
+            setFight(b, 'swipe', 0);
+            pair.timer = rand(1.2, 1.8);
+          } else {
+            enterPhase(pair, 'lunge');
+          }
+        }
+        break;
+      case 'lunge': {
+        // Each runs at the other; once they meet, the fight cloud starts.
+        if (gap <= 4 * scale || pair.timer <= 0) {
+          enterPhase(pair, 'cloud');
+        }
+        break;
+      }
+      case 'cloud': {
+        a.vx = pair.rollVx;
+        b.vx = pair.rollVx;
+        const lo = bandMin(pair) + cloudMargin(pair);
+        const hi = bandMax(pair) - cloudMargin(pair);
+        if ((a.x <= lo && pair.rollVx < 0) || (a.x >= hi && pair.rollVx > 0)) {
+          pair.rollVx = -pair.rollVx;
+        }
+        b.x = a.x;
+        if (pair.timer <= 0) {
+          enterPhase(pair, 'burst');
+        }
+        break;
+      }
+      case 'burst':
+        if (pair.timer <= 0) {
+          enterPhase(pair, 'break');
+        }
+        break;
+      case 'break':
+        if (a.state === 'land' && b.state === 'land') {
+          enterPhase(pair, 'land');
+        }
+        break;
+      case 'land':
+        if (pair.timer <= 0) {
+          afterBreak(pair);
+        }
+        break;
+      case 'backoff':
+        if (pair.timer <= 0) {
+          enterPhase(pair, 'rest');
+        }
+        break;
+      case 'chase': {
+        const runner = pair.runner ?? a;
+        const atWall = runner.x <= bandMin(pair) + 4 * scale || runner.x >= bandMax(pair) - 4 * scale;
+        if (pair.timer <= 0 || atWall) {
+          enterPhase(pair, 'hiss');
+        }
+        break;
+      }
+    }
+  }
+
+  /** One frame of a fighter: the pair logic runs once (from the first cat), then each cat moves. */
+  function stepFighter(cat: Cat, dt: number): void {
+    const pair = cat.pair as Pair;
+    cat.animTime += dt;
+    if (pair.a === cat) {
+      stepPair(pair, dt);
+    }
+    const floor = floorY();
+    if (cat.state === 'jump' || cat.state === 'fall') {
+      cat.vy += gravity() * dt;
+      cat.x += cat.vx * dt;
+      cat.y += cat.vy * dt;
+      cat.x = clamp(cat.x, bandMin(pair), Math.max(bandMin(pair), bandMax(pair)));
+      if (cat.y >= floor && cat.vy > 0) {
+        cat.y = floor;
+        cat.vy = 0;
+        cat.vx = 0;
+        setState(cat, 'land');
+      }
+    } else {
+      cat.y = floor;
+      cat.x = clamp(cat.x + cat.vx * dt, bandMin(pair), Math.max(bandMin(pair), bandMax(pair)));
+    }
+    draw(cat);
+  }
+
   function stepCat(cat: Cat, dt: number): void {
+    if (cat.pair) {
+      stepFighter(cat, dt);
+      return;
+    }
     cat.animTime += dt;
     cat.timer -= dt;
     const g = gravity();
@@ -540,6 +835,7 @@ type CatStyle = import('../catStyles').CatStyle;
       slot,
       climbs: 0,
       seekWall: 0,
+      pair: undefined,
       ball: undefined
     };
     if (style === 'bouncer') {
@@ -547,7 +843,7 @@ type CatStyle = import('../catStyles').CatStyle;
       startBounce(cat);
       cat.y = rand(0.1, 0.9) * floorY();
       cat.vy = -rand(-300, 300) * scale * 0.4;
-    } else {
+    } else if (style !== 'fighters') {
       pickFloorState(cat);
     }
     return cat;
@@ -663,6 +959,33 @@ type CatStyle = import('../catStyles').CatStyle;
   let climberSlot = 0;
   for (let i = 0; i < catCount; i++) {
     cats.push(makeCat(i, order, styleOf[i], styleOf[i] === 'climber' ? climberSlot++ : 0));
+  }
+  // Two Fighters next to each other in the list fight each other (a lone one, which cannot happen, would wander).
+  let pairTotal = 0;
+  for (let i = 0; i < cats.length; i++) {
+    if (cats[i].style === 'fighters' && cats[i + 1]?.style === 'fighters') {
+      pairTotal++;
+      i++;
+    }
+  }
+  let pairIndex = 0;
+  for (let i = 0; i < cats.length; i++) {
+    if (cats[i].style === 'fighters' && cats[i + 1]?.style === 'fighters') {
+      const [a, b] = [cats[i], cats[i + 1]];
+      // Each pair keeps to its own band of the width (the same bands as over the code).
+      const band = CatStyles.pairBand(pairIndex++, pairTotal);
+      const pair: Pair = { a, b, band, phase: 'rest', timer: 1, swatted: false, swatHalf: 0, rollVx: 0, runner: undefined };
+      a.pair = pair;
+      b.pair = pair;
+      const width = Math.max(0, bandMax(pair) - bandMin(pair));
+      a.x = bandMin(pair) + rand(0, 0.3) * width;
+      b.x = bandMax(pair) - rand(0, 0.3) * width;
+      enterPhase(pair, 'rest');
+      i++;
+    } else if (cats[i].style === 'fighters') {
+      cats[i].style = 'wanderer';
+      pickFloorState(cats[i]);
+    }
   }
   for (const cat of cats) draw(cat);
   window.addEventListener('resize', onResize);

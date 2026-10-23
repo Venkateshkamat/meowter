@@ -105,7 +105,7 @@ describe('catArt sprite data', () => {
   const names = frameNames();
 
   it('has the animations the cats need', () => {
-    for (const a of ['idle', 'sit', 'lie', 'sleep', 'swipe', 'walk', 'run', 'jump', 'fall', 'land', 'climb', 'grab']) {
+    for (const a of ['idle', 'sit', 'lie', 'sleep', 'swipe', 'walk', 'run', 'jump', 'fall', 'land', 'climb', 'grab', 'hiss', 'fight']) {
       assert.ok(ANIM_NAMES.includes(a as never), `missing animation ${a}`);
     }
     for (const name of ANIM_NAMES) {
@@ -165,7 +165,7 @@ describe('catArt sprite data', () => {
   });
 
   it('ground frames stand on the floor line', () => {
-    for (const name of names.filter((n) => /^(stand|sit|lie|sleep|swipe|walk)/.test(n))) {
+    for (const name of names.filter((n) => /^(stand|sit|lie|sleep|swipe|walk|hiss|fight)/.test(n))) {
       const rows = painted(frameGrid(name)).map((p) => p[1]);
       assert.strictEqual(Math.max(...rows), FEET_ROWS - 1, `${name} lowest row`);
     }
@@ -186,7 +186,7 @@ describe('catArt sprite data', () => {
   });
 
   it('animations really change between frames', () => {
-    for (const name of ['walk', 'run', 'climb', 'swipe', 'sleep'] as const) {
+    for (const name of ['walk', 'run', 'climb', 'swipe', 'sleep', 'hiss', 'fight'] as const) {
       const frames = new Set(ANIMATIONS[name].frames.map((f) => frameGrid(f).join('')));
       assert.ok(frames.size >= 2, `${name} has distinct frames`);
     }
@@ -214,6 +214,52 @@ describe('catArt sprite data', () => {
     for (let i = 3; i < data.length; i += 4) if (data[i] === 255) count++;
     assert.strictEqual(count, opaque);
     assert.ok(opaque > 150 && opaque < 500, 'a small chunky sprite');
+  });
+});
+
+describe('catArt fight sprites (hiss and fight cloud)', () => {
+  const chars = (name: string): Set<string> => new Set(painted(frameGrid(name)).map((p) => p[2]));
+
+  it('the hiss frames show an arched back, a puffed tail and an open mouth', () => {
+    for (const name of ['hiss0', 'hiss1']) {
+      const px = painted(frameGrid(name));
+      assert.ok(chars(name).has('w') && chars(name).has('p'), `${name} has fangs and a tongue`);
+      // arched: the highest body row is well above where a standing cat's back is
+      const stand = painted(frameGrid('standA'));
+      const top = (list: Array<[number, number, string]>, ch: string): number => Math.min(...list.filter((p) => p[2] === ch).map((p) => p[1]));
+      assert.ok(top(px, 'b') < top(stand, 'b') + 3, `${name} arches its back up`);
+      // the tail is tall and reaches higher than the back
+      assert.ok(top(px, 't') <= top(px, 'b'), `${name} has the puffed tail up high`);
+    }
+    assert.notStrictEqual(frameGrid('hiss0').join(''), frameGrid('hiss1').join(''), 'the hiss moves');
+  });
+
+  it('the fight cloud frames are dust with paws, a tail and stars poking out, and they tumble', () => {
+    const frames = ['fight0', 'fight1', 'fight2', 'fight3'];
+    for (const name of frames) {
+      const c = chars(name);
+      assert.ok(c.has('h') && c.has('a'), `${name} is a dust ball (light and shade)`);
+      assert.ok(c.has('j'), `${name} has stars`);
+      assert.ok(c.has('f') || c.has('b'), `${name} has a paw poking out`);
+      assert.ok(c.has('u') || c.has('t'), `${name} has a tail poking out`);
+      assert.ok(!c.has('k') && !c.has('p'), `${name} has no faces: the cats are inside the cloud`);
+    }
+    assert.strictEqual(new Set(frames.map((f) => frameGrid(f).join(''))).size, 4, 'every frame is different');
+    // The dust is bigger than a cat is tall, so the brawl reads at a glance.
+    const dust = painted(frameGrid('fight0')).filter((p) => p[2] === 'h' || p[2] === 'a');
+    assert.ok(dust.length > 90, `a big dust ball (${dust.length} pixels)`);
+  });
+
+  it('the dust colours are the same for every coat and star pixels are yellow', () => {
+    const colours = (ch: string): Set<string | undefined> => new Set(COATS.map((c) => colorFor(c, ch)));
+    for (const ch of 'haj') assert.strictEqual(colours(ch).size, 1, `${ch} does not depend on the coat`);
+    assert.match(colorFor(COATS[0], 'j') ?? '', /^#ffd/i);
+  });
+
+  it('the fight animations are playable in a scene: hiss on 4 Hz, fight on 8 Hz', () => {
+    assert.strictEqual(SCENE_FPS.hiss, 4);
+    assert.strictEqual(SCENE_FPS.fight, 8);
+    assert.ok(ANIMATIONS.fight.frames.length === 4 && ANIMATIONS.hiss.frames.length >= 2);
   });
 });
 
@@ -337,7 +383,7 @@ describe('catArt scene building blocks', () => {
     const style = sceneStyle();
     for (const coat of COATS) {
       const vars = coatVars(coat);
-      for (const ch of 'obdlpkwmxycfegtuz') {
+      for (const ch of 'obdlpkwmxycfegtuzhaj') {
         assert.ok(style.includes(`.c${ch}{fill:var(--${ch})}`));
         assert.ok(vars.includes(`--${ch}:#`), `${coat.id} --${ch}`);
       }

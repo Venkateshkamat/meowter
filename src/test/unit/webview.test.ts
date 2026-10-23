@@ -2,7 +2,8 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vm from 'vm';
-import { CONTENT_MAX_COL, CONTENT_MIN_COL, FEET_ROWS, FRAME_SIZE } from '../../catArt';
+import { pairBand } from '../../catStyles';
+import { COATS, CONTENT_MAX_COL, CONTENT_MIN_COL, FEET_ROWS, FRAME_SIZE, frameRgba } from '../../catArt';
 
 interface FakeEl {
   tag: string;
@@ -13,6 +14,9 @@ interface FakeEl {
   height: number;
   removed?: boolean;
   puts: number;
+  /** Checksums of every image this element was given, and of the latest one. */
+  shown: Set<string>;
+  current: string;
   throwOnPut?: boolean;
   children: FakeEl[];
 }
@@ -44,6 +48,24 @@ interface BootOpts {
   styles?: string;
 }
 
+/** A checksum of pixel data, to tell which sprite frame an element is showing. */
+function checksum(data: ArrayLike<number>): string {
+  let h = 2166136261;
+  for (let i = 0; i < data.length; i++) {
+    h = Math.imul(h ^ data[i], 16777619);
+  }
+  return String(h >>> 0);
+}
+
+/** Checksums of a frame in every coat, so a cat's frame can be recognised whatever its coat. */
+function frameChecksums(...names: string[]): Set<string> {
+  const out = new Set<string>();
+  for (let coat = 0; coat < COATS.length; coat++) {
+    for (const name of names) out.add(checksum(frameRgba(coat, name).data));
+  }
+  return out;
+}
+
 const TRANSFORM = /translate\((-?[\d.]+)px, (-?[\d.]+)px\) scaleX\((-?1)\)/;
 
 /** Boots the bundled webview script (out/webview/cats.js) against a tiny fake DOM and drives its rAF loop. */
@@ -66,6 +88,8 @@ function boot(width: number, height: number, catCount: number, opts: BootOpts = 
       width: 0,
       height: 0,
       puts: 0,
+      shown: new Set<string>(),
+      current: '',
       throwOnPut: false,
       children: [] as FakeEl[],
       appendChild(c: FakeEl) {
@@ -77,11 +101,13 @@ function boot(width: number, height: number, catCount: number, opts: BootOpts = 
       addEventListener() {},
       getContext() {
         return {
-          putImageData() {
+          putImageData(img: { data: Uint8ClampedArray }) {
             if (e.throwOnPut) {
               throw new Error('boom');
             }
             e.puts++;
+            e.current = checksum(img.data);
+            e.shown.add(e.current);
           }
         };
       }
@@ -188,7 +214,7 @@ describe('bundled webview script', () => {
   it('creates the requested number of pixel-art cats and reports ready', () => {
     const { cats, posted } = run(1000, 700, 8, 1);
     assert.strictEqual(cats.length, 8);
-    assert.strictEqual(JSON.stringify(posted), JSON.stringify([{ type: 'ready', cats: 8, styles: ['wanderer', 'climber', 'bouncer', 'yarnChaser', 'wanderer', 'climber', 'bouncer', 'yarnChaser'] }]));
+    assert.strictEqual(JSON.stringify(posted), JSON.stringify([{ type: 'ready', cats: 8, styles: ['wanderer', 'climber', 'bouncer', 'yarnChaser', 'fighters', 'fighters', 'wanderer', 'climber'] }]));
     for (const c of cats) {
       assert.strictEqual(c.width, FRAME_SIZE);
       assert.strictEqual(c.height, FRAME_SIZE);
@@ -207,9 +233,10 @@ describe('bundled webview script', () => {
     assert.ok(posted.every((m) => m.type === 'ready'));
   });
 
-  it('clamps the cat count to 1..30', () => {
+  it('clamps the cat count to 2..30 (two, so a fighting pair always works)', () => {
     assert.strictEqual(run(900, 600, 100, 1).cats.length, 30);
-    assert.strictEqual(run(900, 600, 0, 1).cats.length, 1);
+    assert.strictEqual(run(900, 600, 0, 1).cats.length, 2);
+    assert.strictEqual(run(900, 600, 1, 1).cats.length, 2);
   });
 
   it('keeps every cat inside the pane, on the floor or above it, and they all move', () => {
@@ -307,6 +334,186 @@ describe('bundled webview script', () => {
       assert.ok(track.some((t) => t.maxX >= maxX - 1), 'someone climbs the right wall');
       const heights = new Set(track.map((t) => Math.round(t.minY / 30)));
       assert.ok(heights.size >= 3 && track.every((t) => t.minY < floor * 0.85), `heights ${[...heights]}`);
+    });
+
+    it('the default six cats are one of each style: four singles and a fighting pair', () => {
+      const { posted } = run(W, H, 6, 1);
+      assert.deepStrictEqual(Array.from(posted[0].styles ?? []), ['wanderer', 'climber', 'bouncer', 'yarnChaser', 'fighters', 'fighters']);
+    });
+
+    it('Fighters only: pairs, and an odd extra cat is a Wanderer', () => {
+      const { posted, cats } = run(W, H, 5, 1, 'fighters');
+      assert.deepStrictEqual(Array.from(posted[0].styles ?? []), ['fighters', 'fighters', 'fighters', 'fighters', 'wanderer']);
+      assert.strictEqual(cats.length, 5);
+    });
+
+    describe('fighting pair', () => {
+      const hiss = frameChecksums('hiss0', 'hiss1');
+      const cloud = frameChecksums('fight0', 'fight1', 'fight2', 'fight3');
+      const swipe = frameChecksums('swipe0', 'swipe1', 'swipe2');
+      const walk = frameChecksums('walk0', 'walk1', 'walk2', 'walk3');
+      const land = frameChecksums('jumpLand');
+
+      /** Plays a 2-cat Fighters tab for `seconds`, sampling both cats every 0.1 s. */
+      function watch(seconds: number) {
+        const b = boot(W, H, 2, { styles: 'fighters' });
+        const samples: Array<{ a: ReturnType<typeof b.pos>; b: ReturnType<typeof b.pos>; fa: string; fb: string }> = [];
+        for (let i = 0; i < seconds * 10; i++) {
+          b.advance(0.1);
+          samples.push({ a: b.pos(b.cats[0]), b: b.pos(b.cats[1]), fa: b.cats[0].current, fb: b.cats[1].current });
+        }
+        return { ...b, samples };
+      }
+
+      it('squares up, hisses, swats, brawls in a cloud, breaks apart and starts again', () => {
+        const { cats, samples, errors } = watch(120);
+        assert.strictEqual(errors.length, 0, JSON.stringify(errors));
+        for (const cat of cats) {
+          const shown = [...cat.shown];
+          const saw = (set: Set<string>): boolean => shown.some((h) => set.has(h));
+          assert.ok(saw(walk), 'stalks');
+          assert.ok(saw(hiss), 'hisses with an arched back');
+          assert.ok(saw(swipe), 'swats');
+          assert.ok(saw(cloud), 'is in the fight cloud');
+          assert.ok(saw(land), 'breaks apart and lands');
+        }
+        const cloudRounds = samples.filter((x) => cloud.has(x.fa) && cloud.has(x.fb)).length;
+        assert.ok(cloudRounds >= 20, `the cloud lasts a few seconds (${cloudRounds / 10}s)`);
+        // Another round after the first one: the fight cloud comes and goes.
+        let changes = 0;
+        for (let i = 1; i < samples.length; i++) {
+          if (cloud.has(samples[i].fa) !== cloud.has(samples[i - 1].fa)) changes++;
+        }
+        assert.ok(changes >= 4, `the brawl starts and stops again and again (${changes})`);
+      });
+
+      it('both stay on the floor (only the break-apart hop leaves it) and inside the pane', () => {
+        const { cats, samples } = watch(90);
+        const scale = parseInt(cats[0].style.width, 10) / FRAME_SIZE;
+        const floor = H - FEET_ROWS * scale;
+        for (const x of samples) {
+          for (const p of [x.a, x.b]) {
+            assert.ok(p, 'positioned');
+            assert.ok(p.y >= floor - 31 * scale && p.y <= floor + 1, `near the floor (${floor - p.y}px up)`);
+            assert.ok(p.x >= -CONTENT_MIN_COL * scale - 1 && p.x <= W - (CONTENT_MAX_COL + 1) * scale + 1, 'inside the pane');
+          }
+        }
+      });
+
+      it('face each other while hissing and fighting; they come together in the cloud and then move apart', () => {
+        const { samples } = watch(120);
+        let hissing = 0;
+        let together = 0;
+        let apart = 0;
+        for (const x of samples) {
+          if (!x.a || !x.b) continue;
+          if (hiss.has(x.fa) && hiss.has(x.fb)) {
+            hissing++;
+            const rightOf = x.b.x > x.a.x;
+            assert.strictEqual(x.a.dir, rightOf ? 1 : -1, 'A looks at B');
+            assert.strictEqual(x.b.dir, rightOf ? -1 : 1, 'B looks at A');
+          }
+          if (cloud.has(x.fa) && cloud.has(x.fb)) {
+            // (at the very end the cloud bursts and the two pull out of it a little way apart)
+            if (Math.abs(x.a.x - x.b.x) < 3) together++;
+            else assert.ok(Math.abs(x.a.x - x.b.x) < 0.12 * W, 'a burst, not a flight');
+            assert.strictEqual(x.a.dir * x.b.dir, -1, 'mirrored, so paws and tails stick out on both sides');
+          }
+          if (Math.abs(x.a.x - x.b.x) > 150) apart++;
+        }
+        assert.ok(hissing >= 20 && together >= 20 && apart >= 50, `hiss ${hissing}, cloud ${together}, apart ${apart}`);
+      });
+
+      it('some rounds end with one cat chasing the other a short way', () => {
+        // Over several pairs and a long time: both run in the same direction at once at least once.
+        const b = boot(W, H, 8, { styles: 'fighters' });
+        let chases = 0;
+        let prev: Array<number | undefined> = [];
+        for (let i = 0; i < 1500; i++) {
+          b.advance(0.1);
+          const xs = b.cats.map((c) => b.pos(c)?.x);
+          for (let k = 0; k < 8; k += 2) {
+            const [x0, x1] = [xs[k], xs[k + 1]];
+            const [p0, p1] = [prev[k], prev[k + 1]];
+            if (x0 !== undefined && x1 !== undefined && p0 !== undefined && p1 !== undefined) {
+              const d0 = x0 - p0;
+              const d1 = x1 - p1;
+              if (Math.abs(d0) > 3 && Math.abs(d1) > 3 && Math.sign(d0) === Math.sign(d1)) chases++;
+            }
+          }
+          prev = xs;
+        }
+        assert.ok(chases >= 3, `a chase happened (${chases} samples)`);
+      });
+
+      it('in a face-off the two sprites never overlap (snouts do not touch), at any pane width', () => {
+        for (const width of [420, 600, 1000, 1600]) {
+          const b = boot(width, H, 2, { styles: 'fighters' });
+          const scale = parseInt(b.cats[0].style.width, 10) / FRAME_SIZE;
+          const content = (CONTENT_MAX_COL - CONTENT_MIN_COL + 1) * scale;
+          let faceOffs = 0;
+          for (let i = 0; i < 1200; i++) {
+            b.advance(0.1);
+            const [pa, pb] = [b.pos(b.cats[0]), b.pos(b.cats[1])];
+            if (pa && pb && hiss.has(b.cats[0].current) && hiss.has(b.cats[1].current)) {
+              faceOffs++;
+              assert.ok(Math.abs(pb.x - pa.x) >= content * 1.1, `width ${width}: boxes ${Math.abs(pb.x - pa.x).toFixed(1)}px apart, sprites ${content}px wide`);
+            }
+          }
+          assert.ok(faceOffs > 20, `hissing happened at ${width}px`);
+        }
+      });
+
+      it('after a cloud the cats are clear of each other soon after the jump', () => {
+        const b = boot(W, H, 2, { styles: 'fighters' });
+        const scale = parseInt(b.cats[0].style.width, 10) / FRAME_SIZE;
+        const content = (CONTENT_MAX_COL - CONTENT_MIN_COL + 1) * scale;
+        let prevCloud = false;
+        let sinceCloud = -1;
+        let checked = 0;
+        for (let i = 0; i < 2400; i++) {
+          b.advance(0.05);
+          const inCloud = cloud.has(b.cats[0].current);
+          if (prevCloud && !inCloud) sinceCloud = 0;
+          else if (sinceCloud >= 0) sinceCloud += 0.05;
+          prevCloud = inCloud;
+          const [pa, pb] = [b.pos(b.cats[0]), b.pos(b.cats[1])];
+          if (pa && pb && sinceCloud >= 0.7 && sinceCloud < 0.8) {
+            checked++;
+            assert.ok(Math.abs(pb.x - pa.x) >= content * 0.9, `${(Math.abs(pb.x - pa.x)).toFixed(0)}px apart 0.7s after the cloud (sprites ${content}px wide)`);
+          }
+        }
+        assert.ok(checked >= 3, `checked ${checked} breaks`);
+      });
+
+      it('two pairs keep to their own halves of the pane (no crowding), the cloud included', () => {
+        const b = boot(W, H, 4, { styles: 'fighters' });
+        const scale = parseInt(b.cats[0].style.width, 10) / FRAME_SIZE;
+        const minX = -CONTENT_MIN_COL * scale;
+        const maxX = W - (CONTENT_MAX_COL + 1) * scale;
+        const span = maxX - minX;
+        const bands = [pairBand(0, 2), pairBand(1, 2)];
+        for (let i = 0; i < 1200; i++) {
+          b.advance(0.1);
+          b.cats.forEach((c, k) => {
+            const p = b.pos(c);
+            assert.ok(p, 'positioned');
+            const [lo, hi] = bands[k < 2 ? 0 : 1];
+            assert.ok(p.x >= minX + lo * span - 1 && p.x <= minX + hi * span + 1, `cat ${k} at ${p.x.toFixed(0)}px left its half`);
+          });
+        }
+        // They really were fighting there, both pairs.
+        for (const c of b.cats) assert.ok([...c.shown].some((h) => cloud.has(h)));
+      });
+
+      it('four Fighters are two independent pairs', () => {
+        const b = boot(W, H, 4, { styles: 'fighters' });
+        b.advance(120);
+        for (const c of b.cats) {
+          assert.ok([...c.shown].some((h) => cloud.has(h)), 'every cat has been in a brawl');
+        }
+        assert.strictEqual(b.errors.length, 0);
+      });
     });
 
     it('bouncer: every cat bounces up to the middle of the screen', () => {

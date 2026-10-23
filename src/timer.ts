@@ -10,8 +10,10 @@ export const MS_PER_MINUTE = 60_000;
 
 export const DEFAULT_BREAK_INTERVAL_MINUTES = 50;
 export const DEFAULT_IDLE_THRESHOLD_MINUTES = 5;
-export const DEFAULT_CAT_COUNT = 8;
-export const MIN_CAT_COUNT = 1;
+/** Six cats = one of each style (four singles and one fighting pair). */
+export const DEFAULT_CAT_COUNT = 6;
+/** Two, so that a fighting pair always works. */
+export const MIN_CAT_COUNT = 2;
 export const MAX_CAT_COUNT = 30;
 
 export interface SharedState {

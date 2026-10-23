@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { planScene, sceneDataUri } from './catScene';
-import { assignStyles, CatStyle } from './catStyles';
+import { assignStyles, CatStyle, distributeStyles } from './catStyles';
 import {
   AnchorMode,
   catsPerEditor,
@@ -271,10 +271,11 @@ export class CatOverlay implements vscode.Disposable {
     const { catCount, styles } = this.config();
     const perEditor = catsPerEditor(catCount, candidates.length);
     // Styles are dealt out over ALL the cats of all editors, so a small count still gets one of each style first.
-    const assignment = assignStyles(perEditor * candidates.length, styles);
+    // A fighting pair stays together on one editor (see distributeStyles).
+    const assignment = distributeStyles(assignStyles(perEditor * candidates.length, styles), perEditor, candidates.length);
     for (const [index, editor] of candidates.entries()) {
       try {
-        this.apply(editor, perEditor, assignment.slice(index * perEditor, (index + 1) * perEditor));
+        this.apply(editor, perEditor, assignment[index]);
       } catch (err) {
         console.error('Meowter: failed to decorate an editor', err);
       }
