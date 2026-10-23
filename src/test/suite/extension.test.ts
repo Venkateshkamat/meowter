@@ -154,6 +154,14 @@ async function openCode(name: string, lineCount: number, viewColumn: vscode.View
   return editor;
 }
 
+/**
+ * The window may have counted a second or two on top of what the file says (time is written every 15 s),
+ * so a timer value is "the file's value plus a little", never less.
+ */
+function assertTimer(actual: number, fileValue: number, msg: string): void {
+  assert.ok(actual >= fileValue && actual < fileValue + 5000, `${msg}: ${actual} should be ${fileValue} plus at most a few seconds`);
+}
+
 async function waitFor(cond: () => boolean, what: string, timeoutMs = 15000): Promise<void> {
   const start = Date.now();
   while (!cond()) {
@@ -296,6 +304,127 @@ suite('Meowter extension', () => {
     assert.strictEqual(api.getState().breakId, state.breakId);
   });
 
+  test('a pause written by another window is picked up without any tick or click', async () => {
+    await openCode('meowter-test-a.ts', 60);
+    await api.startBreakNow();
+    assert.strictEqual(api.getOverlayState().active, true);
+    const state = api.getState();
+    // Another window pauses: it rewrites the shared file. This window must notice by itself.
+    fs.writeFileSync(api.getStateFilePath(), JSON.stringify({ ...state, activeMs: 0, breakActive: false, updatedAt: Date.now() }));
+    await waitFor(() => !api.getState().breakActive, 'the pause from the other window', 5000);
+    await waitFor(() => !api.getOverlayState().active, 'cats removed by the other window\'s pause', 5000);
+    assert.strictEqual(api.getState().breakId, state.breakId);
+    assert.match(api.getStatusBarText(), /^🐱 \d+m$/);
+  });
+
+  test('a break started by another window is picked up without any tick', async () => {
+    await openCode('meowter-test-a.ts', 60);
+    const state = api.getState();
+    fs.writeFileSync(
+      api.getStateFilePath(),
+      JSON.stringify({ ...state, activeMs: 50 * 60_000, breakActive: true, breakId: state.breakId + 1, updatedAt: Date.now() })
+    );
+    await waitFor(() => api.getState().breakActive, 'the break from the other window', 5000);
+    await waitFor(() => api.getOverlayState().active, 'cats shown for the other window\'s break', 5000);
+    assert.strictEqual(api.getStatusBarText(), BREAK_STATUS);
+    assert.strictEqual(notifier.calls.length, 1, 'one notification for the break');
+  });
+
+  test('a break ended by another window is noticed even if the file watcher is dead', async () => {
+    await openCode('meowter-test-a.ts', 60);
+    await api.startBreakNow();
+    assert.strictEqual(api.getOverlayState().active, true);
+    try {
+      api.stopWatchingForTest();
+      assert.strictEqual(api.isWatching(), false);
+      const state = api.getState();
+      fs.writeFileSync(api.getStateFilePath(), JSON.stringify({ ...state, activeMs: 0, breakActive: false, updatedAt: Date.now() }));
+      // The break tick compares the file's signature once a second, so this takes about a second, not a minute.
+      await waitFor(() => !api.getState().breakActive, 'the pause, found by the break tick', 5000);
+      await waitFor(() => !api.getOverlayState().active, 'cats removed', 5000);
+    } finally {
+      api.startWatchingForTest();
+      await api.pause();
+    }
+  });
+
+  test('an unreadable shared file is not treated as an empty one: the break and the time survive', async function () {
+    await openCode('meowter-test-a.ts', 60);
+    await api.startBreakNow();
+    const file = api.getStateFilePath();
+    const breakId = api.getState().breakId;
+    fs.chmodSync(file, 0o000);
+    try {
+      try {
+        fs.readFileSync(file);
+        return this.skip(); // running as root
+      } catch {
+        // as expected
+      }
+      await api.tickNow();
+      await api.flushNow();
+      await new Promise((r) => setTimeout(r, 1500)); // a few break ticks
+      assert.strictEqual(api.getState().breakActive, true, 'the break is not ended by a read error');
+      assert.strictEqual(api.getState().breakId, breakId);
+    } finally {
+      fs.chmodSync(file, 0o600);
+    }
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.deepStrictEqual([parsed.breakActive, parsed.breakId], [true, breakId], 'the file was not overwritten');
+  });
+
+  test('counting a tick touches no file: time is kept in memory and flushed in batches', async () => {
+    await api.pause();
+    // Background work (the watcher echo of our own write, a focus event) may read the file at any moment, so
+    // take a few samples: five ticks must be able to run without touching the disk at all. A tick that did I/O
+    // every time would fail every sample.
+    let quiet = false;
+    for (let attempt = 0; attempt < 5 && !quiet; attempt++) {
+      await new Promise((r) => setTimeout(r, 400));
+      const before = api.getIoStats();
+      for (let i = 0; i < 5; i++) {
+        await api.tickMemory();
+      }
+      quiet = JSON.stringify(api.getIoStats()) === JSON.stringify(before);
+    }
+    assert.ok(quiet, 'five ticks read and wrote nothing');
+    // Flushing writes what was counted (if this window was counting) and leaves the file consistent with the view.
+    await api.flushNow();
+    const parsed = JSON.parse(fs.readFileSync(api.getStateFilePath(), 'utf8'));
+    const view = api.getState();
+    assert.ok(parsed.activeMs <= view.activeMs && view.activeMs - parsed.activeMs < 5000, `file ${parsed.activeMs} vs view ${view.activeMs}`);
+  });
+
+  test('flushNow writes the time counted in this window', async function () {
+    await api.pause();
+    // Count for real when the window is focused; otherwise there is nothing to flush and the test is moot.
+    if (!vscode.window.state.focused) {
+      return this.skip();
+    }
+    await waitFor(() => api.getPendingMs() > 0, 'a counted second', 6000);
+    const pending = api.getPendingMs();
+    assert.ok(pending > 0);
+    const writes = api.getIoStats().writes;
+    await api.flushNow();
+    assert.ok(api.getIoStats().writes > writes, 'the flush wrote the file');
+    const parsed = JSON.parse(fs.readFileSync(api.getStateFilePath(), 'utf8'));
+    assert.ok(parsed.activeMs >= pending, `file has the counted time: ${parsed.activeMs} >= ${pending}`);
+  });
+
+  test('the tick runs only while the window is focused or a break is showing', async () => {
+    await api.pause();
+    await api.tickMemory();
+    assert.strictEqual(api.isTicking(), vscode.window.state.focused);
+    await api.startBreakNow();
+    assert.strictEqual(api.isTicking(), true, 'a break keeps the tick going');
+    await api.pause();
+    assert.strictEqual(api.isTicking(), vscode.window.state.focused);
+  });
+
+  test('the state directory is watched, so other windows are noticed without polling', () => {
+    assert.strictEqual(api.isWatching(), true);
+  });
+
   test('a corrupt shared file is recovered as fresh state', async () => {
     fs.writeFileSync(api.getStateFilePath(), '{not json');
     await api.tickNow();
@@ -395,7 +524,7 @@ suite('Meowter extension', () => {
       fs.writeFileSync(file, JSON.stringify({ ...state, activeMs: 123456, updatedAt: Date.now() }));
       notifier.calls[0].resolve(undefined);
       await new Promise((r) => setTimeout(r, 400));
-      assert.strictEqual(api.getState().activeMs, 123456, 'timer untouched by the stale notification');
+      assertTimer(api.getState().activeMs, 123456, 'timer untouched by the stale notification');
     });
 
     test('with no visible editor the break falls back to the cat tab', async () => {
@@ -493,6 +622,7 @@ suite('Meowter extension', () => {
       await openShortLines('meowter-test-b.ts', 90, vscode.ViewColumn.Beside);
       await api.startBreakNow();
       await waitFor(() => api.getOverlayState().editors.length === 2, 'both editors decorated');
+      await waitFor(() => api.getOverlayState().editors.every((e) => Math.abs(e.widthFraction - 0.5) < 0.05), 'each editor knows it has half the width');
       let measures: OverlayMeasure[] | undefined;
       const start = Date.now();
       do {
@@ -623,7 +753,12 @@ suite('Meowter extension', () => {
       try {
         await editor.edit((b) => b.insert(new vscode.Position(0, 2), 'x'.repeat(500)));
         await waitFor(() => api.getOverlayState().editors[0]?.widestPx > widestBefore + 2000, 'the overlay noticed the long line');
-        await vscode.commands.executeCommand('undo');
+        if (vscode.window.state.focused) {
+          await vscode.commands.executeCommand('undo');
+        } else {
+          // The undo command needs a focused window; deleting the text has the same effect on the document.
+          await editor.edit((b) => b.delete(new vscode.Range(0, 2, 0, 502)));
+        }
         await waitFor(() => !editor.document.getText().includes('xxxxxxxxxx'), 'the long line is undone');
         // Give the debounced re-check time to run, then look at what the browser really did.
         await new Promise((r) => setTimeout(r, 1500));
@@ -681,7 +816,7 @@ suite('Meowter extension', () => {
       fs.writeFileSync(file, JSON.stringify({ ...state, activeMs: 654321, updatedAt: Date.now() }));
       await vscode.commands.executeCommand('meowter.pause');
       const after = api.getState();
-      assert.strictEqual(after.activeMs, 654321, 'a stray pause must not zero the timer');
+      assertTimer(after.activeMs, 654321, 'a stray pause must not zero the timer');
       assert.strictEqual(after.breakActive, false);
       assert.strictEqual(after.breakId, state.breakId);
     });
@@ -703,7 +838,7 @@ suite('Meowter extension', () => {
       // Another window pauses and the user has since worked for a while.
       fs.writeFileSync(api.getStateFilePath(), JSON.stringify({ ...state, breakActive: false, activeMs: 4242, updatedAt: Date.now() }));
       await vscode.commands.executeCommand('meowter.pause');
-      assert.strictEqual(api.getState().activeMs, 4242, 'the click must not reset the timer again');
+      assertTimer(api.getState().activeMs, 4242, 'the click must not reset the timer again');
       assert.strictEqual(api.getState().breakActive, false);
       await api.tickNow();
       await waitFor(() => !api.getOverlayState().active, 'decorations removed by the shared state');

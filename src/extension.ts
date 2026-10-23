@@ -3,12 +3,10 @@ import { ActivityTracker } from './activity';
 import { BreakPanel, WebviewReport } from './breakPanel';
 import { CatOverlay, OverlayState } from './catOverlay';
 import { Notifier, NOTICE_BUTTON, NOTICE_MESSAGE, shouldPauseForNotice } from './notice';
-import { SharedStateStore } from './sharedState';
+import { SharedStateStore, StateWatcher } from './sharedState';
+import { SharedTimer } from './stateSync';
 import {
-  applyBreakNow,
-  applyPause,
   canPause,
-  applyTick,
   DEFAULT_BREAK_INTERVAL_MINUTES,
   DEFAULT_IDLE_THRESHOLD_MINUTES,
   formatStatusText,
@@ -18,18 +16,42 @@ import {
   normalizeMinutes,
   parseIntervalInput,
   remainingMinutes,
+  freshState,
   SharedState,
   validateIntervalInput
 } from './timer';
 
+/** One counting tick per second, only while this window is focused or a break is showing. */
 const TICK_MS = 1000;
+/** Other windows' writes arrive as file-system events; this is only a cheap safety net (a stat, no read). */
+const SAFETY_POLL_MS = 60_000;
+/** Used instead when the directory cannot be watched. */
+const FALLBACK_POLL_MS = 1000;
+/** Coalesces the burst of events one atomic write produces. */
+const WATCH_DEBOUNCE_MS = 30;
 
 export interface MeowterTestApi {
   getState(): SharedState;
   getStateFilePath(): string;
   startBreakNow(): Promise<void>;
   pause(): Promise<void>;
+  /** Re-reads the shared file (as a file-system event would), then runs one tick. */
   tickNow(): Promise<void>;
+  /** One tick from memory only: no disk access unless a flush falls due. */
+  tickMemory(): Promise<void>;
+  /** Writes the active time counted in this window to the shared file now. */
+  flushNow(): Promise<void>;
+  /** Active time counted in this window that the shared file does not have yet. */
+  getPendingMs(): number;
+  /** File reads and writes made by this window so far. */
+  getIoStats(): { reads: number; writes: number };
+  /** Whether the 1 s tick is running (only while focused or during a break). */
+  isTicking(): boolean;
+  /** Whether the state directory is watched (otherwise it is polled). */
+  isWatching(): boolean;
+  /** Kills the file watcher, as if it had died; other windows must still be noticed. */
+  stopWatchingForTest(): void;
+  startWatchingForTest(): void;
   isBreakPanelOpen(): boolean;
   getStatusBarText(): string;
   getBreakPanelForTest(): vscode.WebviewPanel | undefined;
@@ -72,8 +94,21 @@ function readSettings(): Settings {
   };
 }
 
-export function activate(context: vscode.ExtensionContext): MeowterTestApi {
+let shutdown: (() => Promise<void>) | undefined;
+
+export async function activate(context: vscode.ExtensionContext): Promise<MeowterTestApi> {
   const store = new SharedStateStore(context.globalStorageUri.fsPath);
+  await store.ensureDir();
+  // A file that cannot be read now is not "no state": start fresh in memory and let the first refresh adopt the real one.
+  const core = new SharedTimer(
+    store,
+    await store.read().catch((err) => {
+      console.error('Meowter: could not read shared state', err);
+      return freshState();
+    })
+  );
+  // Settings are read once and again only when they change, not on every tick.
+  let settings = readSettings();
   const activity = new ActivityTracker();
   const breakPanel = new BreakPanel(context.extensionUri);
   const overlay = new CatOverlay();
@@ -84,31 +119,32 @@ export function activate(context: vscode.ExtensionContext): MeowterTestApi {
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBar.command = SETTINGS_COMMAND;
 
-  let lastTickAt: number | undefined;
-  let lastState: SharedState = store.read();
   // Serializes panel open/close so ticks and pause requests cannot interleave.
   let queue: Promise<void> = Promise.resolve();
 
-  const safeWrite = (state: SharedState): void => {
-    try {
-      store.write(state);
-    } catch (err) {
-      console.error('Meowter: failed to write shared state', err);
-    }
-  };
-
+  // The status bar is only touched when what it shows changes (each assignment is a message to the UI process).
+  let shownText: string | undefined;
+  let shownBreak: boolean | undefined;
+  let shownTooltip: string | undefined;
   const updateStatusBar = (state: SharedState): void => {
-    const { intervalMs } = readSettings();
-    statusBar.text = formatStatusText(state, intervalMs);
-    if (state.breakActive) {
+    const { intervalMs } = settings;
+    const text = formatStatusText(state, intervalMs);
+    if (text !== shownText) {
+      shownText = text;
+      statusBar.text = text;
+    }
+    if (state.breakActive !== shownBreak) {
+      shownBreak = state.breakActive;
       // During a break the item is a pause button too: notifications auto-hide, the status bar stays.
-      statusBar.command = { title: NOTICE_BUTTON, command: PAUSE_COMMAND };
-      statusBar.tooltip = `Meowter: time for a break! Click "${NOTICE_BUTTON}" to send the cats away and restart the timer.`;
-    } else {
-      statusBar.command = SETTINGS_COMMAND;
-      statusBar.tooltip =
-        `Meowter: ${remainingMinutes(state.activeMs, intervalMs)} min of active IDE use until your next break. ` +
+      statusBar.command = state.breakActive ? { title: NOTICE_BUTTON, command: PAUSE_COMMAND } : SETTINGS_COMMAND;
+    }
+    const tooltip = state.breakActive
+      ? `Meowter: time for a break! Click "${NOTICE_BUTTON}" to send the cats away and restart the timer.`
+      : `Meowter: ${remainingMinutes(state.activeMs, intervalMs)} min of active IDE use until your next break. ` +
         'Click to change the break interval.';
+    if (tooltip !== shownTooltip) {
+      shownTooltip = tooltip;
+      statusBar.tooltip = tooltip;
     }
   };
 
@@ -119,8 +155,10 @@ export function activate(context: vscode.ExtensionContext): MeowterTestApi {
       return;
     }
     noticedBreakId = breakId;
-    const onResult = (): void => {
-      if (shouldPauseForNotice(breakId, store.read())) {
+    const onResult = async (): Promise<void> => {
+      // Judge by the shared file as it is now, not by what this window last saw.
+      await core.refresh().catch(() => false);
+      if (shouldPauseForNotice(breakId, core.view)) {
         void pause();
       }
     };
@@ -135,8 +173,8 @@ export function activate(context: vscode.ExtensionContext): MeowterTestApi {
 
   // Brings this window's UI in line with the shared file.
   const reconcileNow = async (): Promise<void> => {
-    const state = store.read();
-    lastState = state;
+    const state = core.view;
+    reconciledKey = stateKey(state);
     updateStatusBar(state);
     if (state.breakActive) {
       showNotice(state.breakId);
@@ -150,12 +188,14 @@ export function activate(context: vscode.ExtensionContext): MeowterTestApi {
         breakMode = 'tab';
       }
       if (breakMode === 'overlay') {
-        overlay.start(() => readSettings().catCount);
+        overlay.start(() => settings.catCount);
       } else if (!breakPanel.isOpen) {
-        await breakPanel.show(readSettings().catCount);
+        await breakPanel.show(settings.catCount);
       }
     } else {
       breakMode = undefined;
+      // Break ids can start over (the file was deleted): the next break must be announced even with an id seen before.
+      noticedBreakId = undefined;
       overlay.stop();
       if (breakPanel.isOpen) {
         await breakPanel.close();
@@ -167,34 +207,157 @@ export function activate(context: vscode.ExtensionContext): MeowterTestApi {
     return queue;
   };
 
-  const tick = async (): Promise<void> => {
+  // Reconcile only when the break state changed or this window's surfaces are not what the state calls for.
+  let reconciledKey = '';
+  const stateKey = (s: SharedState): string => `${s.breakActive}:${s.breakId}`;
+  const surfacesHealthy = (s: SharedState): boolean => {
+    if (!s.breakActive) {
+      return breakMode === undefined && !overlay.active && !breakPanel.isOpen;
+    }
+    if (breakMode === 'overlay') {
+      // (No editor left to draw on is handled by the debounced onDidChangeVisibleTextEditors check, which waits
+      // out the moment between closing one tab and opening another.)
+      return overlay.active;
+    }
+    return breakMode === 'tab' && breakPanel.isOpen;
+  };
+
+  // The tick runs only while this window is focused (it may count) or a break is showing (it keeps the surfaces
+  // right). An unfocused window with no break does nothing: file events and window-state events wake it.
+  let tickTimer: ReturnType<typeof setInterval> | undefined;
+  const syncTicking = (): void => {
+    const want = vscode.window.state.focused || core.view.breakActive;
+    if (want && !tickTimer) {
+      core.resetClock(Date.now());
+      tickTimer = setInterval(() => void tick(), TICK_MS);
+    } else if (!want && tickTimer) {
+      clearInterval(tickTimer);
+      tickTimer = undefined;
+    }
+  };
+
+  // Brings status bar, surfaces and the tick in line with the in-memory state.
+  const sync = async (): Promise<void> => {
+    const view = core.view;
+    updateStatusBar(view);
+    if (core.breakPending) {
+      // A break this window just started is a guess until it is in the file (its id may change when another
+      // window started one first): show the surfaces and the notification once it is written.
+      syncTicking();
+      return;
+    }
+    if (stateKey(view) !== reconciledKey || !surfacesHealthy(view)) {
+      await reconcile();
+    }
+    syncTicking();
+  };
+
+  const flush = async (): Promise<void> => {
+    try {
+      await core.flush(settings.intervalMs);
+    } catch (err) {
+      console.error('Meowter: failed to write shared state', err);
+    }
+    await sync();
+  };
+
+  const countTick = (): void => {
     const now = Date.now();
-    const { intervalMs, idleMs } = readSettings();
     const win = vscode.window.state;
     if (win.focused && win.active) {
       activity.touch(now);
     }
-    const state = store.read(now);
     const counting = isCounting({
       focused: win.focused,
       windowActive: win.active,
       lastActivityAt: activity.lastActivityAt,
       now,
-      idleMs,
-      breakActive: state.breakActive
+      idleMs: settings.idleMs,
+      breakActive: core.view.breakActive
     });
-    const result = applyTick(state, { now, lastTickAt, counting, intervalMs });
-    lastTickAt = now;
-    if (result.changed) {
-      safeWrite(result.state);
+    core.count({ now, counting, intervalMs: settings.intervalMs });
+    if (core.flushDue(now)) {
+      void flush();
     }
-    await reconcile();
   };
+
+  const tick = async (): Promise<void> => {
+    countTick();
+    if (core.view.breakActive) {
+      // The tick runs during a break anyway: one stat per second notices a pause written by another window even
+      // if a file event was missed or the watcher died (no file is read unless the stat shows a change).
+      const sig = await store.signature();
+      if (sig !== lastSignature) {
+        await externalRefresh();
+      }
+      overlay.checkLayout();
+    }
+    await sync();
+  };
+
+  // Another window changed the shared file (file event or safety poll): take it over.
+  let lastSignature: string | undefined;
+  let readFailureLogged = false;
+  const externalRefresh = async (): Promise<void> => {
+    try {
+      const sig = await store.signature();
+      const changed = await core.refresh();
+      lastSignature = sig; // only after a successful read: a file that could not be read is looked at again
+      readFailureLogged = false;
+      if (changed) {
+        await sync();
+      }
+    } catch (err) {
+      if (!readFailureLogged) {
+        readFailureLogged = true;
+        console.error('Meowter: failed to read shared state', err);
+      }
+    }
+  };
+
+  let watchDebounce: ReturnType<typeof setTimeout> | undefined;
+  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  const startPolling = (everyMs: number): void => {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+    }
+    pollTimer = setInterval(() => {
+      void store.signature().then((sig) => {
+        if (sig !== lastSignature) {
+          void externalRefresh();
+        }
+      });
+    }, everyMs);
+  };
+  let watcher: StateWatcher | undefined;
+  const startWatching = (): void => {
+    watcher?.close();
+    watcher = store.watch(
+      () => {
+        if (!watchDebounce) {
+          watchDebounce = setTimeout(() => {
+            watchDebounce = undefined;
+            void externalRefresh();
+          }, WATCH_DEBOUNCE_MS);
+        }
+      },
+      () => {
+        watcher = undefined;
+        startPolling(FALLBACK_POLL_MS);
+      }
+    );
+  };
+  startWatching();
+  lastSignature = await store.signature();
+  startPolling(watcher ? SAFETY_POLL_MS : FALLBACK_POLL_MS);
 
   // Ends the break and restarts the timer, whatever the state is.
   const resetNow = async (): Promise<void> => {
-    safeWrite(applyPause(store.read(), Date.now()));
-    lastTickAt = undefined;
+    try {
+      await core.pause(Date.now());
+    } catch (err) {
+      console.error('Meowter: failed to write shared state', err);
+    }
     // Close even if another reconcile is queued; close() is idempotent.
     queue = queue
       .then(async () => {
@@ -204,21 +367,29 @@ export function activate(context: vscode.ExtensionContext): MeowterTestApi {
       .catch((err) => console.error('Meowter: close failed', err));
     await queue;
     await reconcile();
+    await sync();
   };
 
   // A user pause (command, status bar, notification, cat tab): a no-op unless a break is running. The shared
   // file is re-read now, so a stale status bar item, a keybinding or another extension can never zero the timer,
   // and a click after another window already paused does nothing.
   const pause = async (): Promise<void> => {
-    if (!canPause(store.read())) {
+    await core.refresh().catch(() => false);
+    if (!canPause(core.view)) {
+      await sync();
       return;
     }
     await resetNow();
   };
 
   const startBreakNow = async (): Promise<void> => {
-    safeWrite(applyBreakNow(store.read(), readSettings().intervalMs, Date.now()));
+    try {
+      await core.breakNow(settings.intervalMs, Date.now());
+    } catch (err) {
+      console.error('Meowter: failed to write shared state', err);
+    }
     await reconcile();
+    await sync();
   };
 
   context.subscriptions.push(
@@ -243,11 +414,31 @@ export function activate(context: vscode.ExtensionContext): MeowterTestApi {
     { dispose: () => noEditorTimer && clearTimeout(noEditorTimer) },
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('meowter')) {
-        updateStatusBar(lastState);
+        settings = readSettings();
+        void tick(); // a lower interval may already be reached
       }
     }),
+    vscode.window.onDidChangeWindowState((state) => {
+      if (state.focused) {
+        // Pick up what other windows did meanwhile, then start counting.
+        void externalRefresh().then(sync);
+        syncTicking();
+      } else {
+        // Do not hold time back while in the background: other windows must see it.
+        void flush();
+        syncTicking();
+      }
+    }),
+    {
+      dispose: () => {
+        clearInterval(tickTimer);
+        clearInterval(pollTimer);
+        clearTimeout(watchDebounce);
+        watcher?.close();
+      }
+    },
     vscode.commands.registerCommand('meowter.setBreakInterval', async () => {
-      const current = readSettings().intervalMs / MS_PER_MINUTE;
+      const current = settings.intervalMs / MS_PER_MINUTE;
       const input = await vscode.window.showInputBox({
         title: 'Meowter: Set Break Interval',
         prompt: 'Minutes of active IDE use before a break',
@@ -264,23 +455,49 @@ export function activate(context: vscode.ExtensionContext): MeowterTestApi {
       await vscode.workspace
         .getConfiguration('meowter')
         .update('breakIntervalMinutes', minutes, vscode.ConfigurationTarget.Global);
-      updateStatusBar(lastState);
+      settings = readSettings();
+      updateStatusBar(core.view);
     })
   );
 
-  updateStatusBar(lastState);
+  shutdown = async () => {
+    clearInterval(tickTimer);
+    tickTimer = undefined;
+    clearInterval(pollTimer);
+    clearTimeout(watchDebounce);
+    watchDebounce = undefined;
+    watcher?.close();
+    try {
+      await core.flush(settings.intervalMs);
+    } catch (err) {
+      console.error('Meowter: failed to write shared state on shutdown', err);
+    }
+  };
+
   statusBar.show();
-  const timer = setInterval(() => void tick(), TICK_MS);
-  context.subscriptions.push({ dispose: () => clearInterval(timer) });
-  void tick();
+  await tick();
 
   return {
-    getState: () => store.read(),
+    getState: () => core.view,
     getStateFilePath: () => store.filePath,
     startBreakNow,
     // Tests use this to reset the timer from any state; real pause paths use the guarded `pause`.
     pause: resetNow,
-    tickNow: tick,
+    tickNow: async () => {
+      await externalRefresh();
+      await tick();
+    },
+    tickMemory: tick,
+    flushNow: flush,
+    getPendingMs: () => core.pendingMs,
+    getIoStats: () => ({ ...store.stats }),
+    isTicking: () => tickTimer !== undefined,
+    isWatching: () => watcher !== undefined,
+    stopWatchingForTest: () => {
+      watcher?.close();
+      watcher = undefined;
+    },
+    startWatchingForTest: startWatching,
     isBreakPanelOpen: () => breakPanel.isOpen,
     getStatusBarText: () => statusBar.text,
     getBreakPanelForTest: () => breakPanel.webviewPanel,
@@ -295,6 +512,8 @@ export function activate(context: vscode.ExtensionContext): MeowterTestApi {
   };
 }
 
-export function deactivate(): void {
+export function deactivate(): Promise<void> | undefined {
+  // The time counted since the last flush must reach the shared file before the host goes away.
   // Disposables registered in context.subscriptions are cleaned up by the host.
+  return shutdown?.();
 }

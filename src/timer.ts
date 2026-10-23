@@ -97,19 +97,27 @@ export interface TickResult {
 }
 
 export function applyTick(state: SharedState, input: TickInput): TickResult {
-  if (state.breakActive) {
-    return { state, changed: false, breakTriggered: false };
-  }
   let delta = 0;
   if (input.counting && input.lastTickAt !== undefined) {
     delta = Math.min(Math.max(input.now - input.lastTickAt, 0), MAX_DELTA_MS);
+  }
+  return applyDelta(state, delta, input.intervalMs, input.now);
+}
+
+/**
+ * Adds `delta` ms of active time to `state` and starts a break when the interval is reached.
+ * Does nothing during a break (time accumulated elsewhere meanwhile is dropped).
+ */
+export function applyDelta(state: SharedState, delta: number, intervalMs: number, now: number): TickResult {
+  if (state.breakActive) {
+    return { state, changed: false, breakTriggered: false };
   }
   let activeMs = state.activeMs + delta;
   let breakActive = false;
   let breakId = state.breakId;
   let breakTriggered = false;
-  if (activeMs >= input.intervalMs) {
-    activeMs = input.intervalMs;
+  if (activeMs >= intervalMs) {
+    activeMs = intervalMs;
     breakActive = true;
     breakId += 1;
     breakTriggered = true;
@@ -118,7 +126,7 @@ export function applyTick(state: SharedState, input: TickInput): TickResult {
     return { state, changed: false, breakTriggered: false };
   }
   return {
-    state: { version: STATE_VERSION, activeMs, breakActive, breakId, updatedAt: input.now },
+    state: { version: STATE_VERSION, activeMs, breakActive, breakId, updatedAt: now },
     changed: true,
     breakTriggered
   };

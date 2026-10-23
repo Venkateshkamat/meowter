@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import {
   applyBreakNow,
+  applyDelta,
   applyPause,
   applyTick,
   canPause,
@@ -38,6 +39,32 @@ describe('timer', () => {
     });
     it('never counts during a break', () => {
       assert.strictEqual(isCounting({ ...base, breakActive: true }), false);
+    });
+  });
+
+  describe('applyDelta', () => {
+    const interval = 50 * MIN;
+
+    it('adds the delta and keeps the break id', () => {
+      const r = applyDelta({ ...freshState(0), activeMs: 1000, breakId: 3 }, 5000, interval, 9);
+      assert.deepStrictEqual([r.state.activeMs, r.state.breakId, r.changed, r.breakTriggered], [6000, 3, true, false]);
+    });
+    it('starts a break when the delta reaches the interval', () => {
+      const r = applyDelta({ ...freshState(0), activeMs: interval - 1000, breakId: 3 }, 4000, interval, 9);
+      assert.deepStrictEqual(
+        [r.state.activeMs, r.state.breakActive, r.state.breakId, r.breakTriggered],
+        [interval, true, 4, true]
+      );
+    });
+    it('drops the delta during a break', () => {
+      const s = { ...freshState(0), breakActive: true, activeMs: interval, breakId: 2 };
+      const r = applyDelta(s, 4000, interval, 9);
+      assert.strictEqual(r.state, s);
+      assert.strictEqual(r.changed, false);
+    });
+    it('changes nothing for a zero delta', () => {
+      const s = freshState(0);
+      assert.strictEqual(applyDelta(s, 0, interval, 9).state, s);
     });
   });
 

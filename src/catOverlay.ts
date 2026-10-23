@@ -76,6 +76,10 @@ export class CatOverlay implements vscode.Disposable {
   /** Widest-line width seen per document during this break; it never shrinks (Monaco's layer does not either). */
   private readonly peaks = new Map<string, number>();
   private docTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Re-reads of the group layout scheduled after a start or an editor/group change (the layout settles late). */
+  private layoutTimers: Array<ReturnType<typeof setTimeout>> = [];
+  /** Which editors (and columns) the layout was last read for; see checkLayout. */
+  private layoutSignature = '';
 
   /** Editors that can show cats: real editor tabs (not panel/output editors, not notebook cells). */
   static candidates(): vscode.TextEditor[] {
@@ -100,14 +104,19 @@ export class CatOverlay implements vscode.Disposable {
   /** Starts (or re-applies) the overlay. `catCount` is read on every refresh. */
   start(catCount: () => number): void {
     this.catCount = catCount;
-    if (!this.running) {
+    const first = !this.running;
+    if (first) {
       this.running = true;
       this.listeners.push(
         vscode.window.onDidChangeVisibleTextEditors(() => {
           void this.updateGroupLayout();
+          this.recheckLayoutSoon();
           this.refresh();
         }),
-        vscode.window.tabGroups.onDidChangeTabGroups(() => void this.updateGroupLayout()),
+        vscode.window.tabGroups.onDidChangeTabGroups(() => {
+          void this.updateGroupLayout();
+          this.recheckLayoutSoon();
+        }),
         vscode.workspace.onDidChangeTextDocument((e) => {
           if (e.contentChanges.length > 0 && [...this.entries.keys()].some((ed) => ed.document === e.document)) {
             this.scheduleDocRefresh();
@@ -123,6 +132,40 @@ export class CatOverlay implements vscode.Disposable {
     }
     this.refresh();
     void this.updateGroupLayout();
+    // The editor groups are often still being laid out when a break starts: look again a few times.
+    if (first) {
+      this.recheckLayoutSoon([250, 1000, 2500]);
+    }
+  }
+
+  /** Re-reads the group layout after the given delays (default: once, shortly). */
+  private recheckLayoutSoon(delays: number[] = [300]): void {
+    for (const ms of delays) {
+      const timer = setTimeout(() => {
+        this.layoutTimers = this.layoutTimers.filter((t) => t !== timer);
+        if (this.running) {
+          void this.updateGroupLayout();
+        }
+      }, ms);
+      this.layoutTimers.push(timer);
+    }
+  }
+
+  /**
+   * Cheap, synchronous check meant for a once-a-second break tick: when the set of visible editors or their columns
+   * differs from the last time the layout was read, read it again. Does nothing otherwise.
+   */
+  checkLayout(): void {
+    if (!this.running) {
+      return;
+    }
+    const signature = CatOverlay.candidates()
+      .map((e) => `${e.viewColumn}:${e.document.uri.toString()}`)
+      .join('|');
+    if (signature !== this.layoutSignature) {
+      this.layoutSignature = signature;
+      void this.updateGroupLayout();
+    }
   }
 
   /**
@@ -146,6 +189,12 @@ export class CatOverlay implements vscode.Disposable {
   /** Removes every decoration. Idempotent. */
   stop(): void {
     this.running = false;
+    for (const t of this.layoutTimers.splice(0)) {
+      clearTimeout(t);
+    }
+    // The next break may start in a different layout: do not trust this one until it is read again.
+    this.fractions = [];
+    this.layoutSignature = '';
     if (this.docTimer) {
       clearTimeout(this.docTimer);
       this.docTimer = undefined;
