@@ -1,10 +1,37 @@
+# Only what the extension needs at runtime goes into the .vsix:
+# package.json, LICENSE, README, CHANGELOG, media/cats.css, media/icon.png and out/ (compiled extension + webview bundle).
+
+# Editor, test and build tooling
 .vscode/**
 .vscode-test/**
+.vscode-test.*
+.github/**
+scripts/**
 src/**
-out/test/**
-out/**/*.map
-node_modules/**
 tsconfig*.json
+
+# Compiled tests and the intermediate webview build (out/webview/cats.js is the bundle that is shipped)
+out/test/**
+out/.webview/**
+out/**/*.map
+**/*.ts
+!**/*.d.ts
+
+# Dependencies and lock files
+node_modules/**
+package-lock.json
+.npmrc
+
+# Repository files
+.git/**
 .gitignore
+.gitattributes
+.editorconfig
+.eslintrc*
+.prettierrc*
 CLAUDE.md
 **/*.vsix
+
+# README-only media (vsce rewrites README image links to GitHub)
+media/demo.gif
+media/screenshot*.png
