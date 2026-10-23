@@ -62,6 +62,39 @@
           "minimum": 1,
           "maximum": 30,
           "description": "Number of cats shown during a break."
+        },
+        "meowter.styles": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {
+            "wanderer": true,
+            "climber": true,
+            "bouncer": true,
+            "yarnChaser": true
+          },
+          "properties": {
+            "wanderer": {
+              "type": "boolean",
+              "default": true,
+              "description": "Walks, runs, sits, sleeps, swipes and hops on the floor."
+            },
+            "climber": {
+              "type": "boolean",
+              "default": true,
+              "description": "Climbs the side walls, hangs and grabs, then comes down."
+            },
+            "bouncer": {
+              "type": "boolean",
+              "default": true,
+              "description": "Bounces in big arcs across the middle of the screen."
+            },
+            "yarnChaser": {
+              "type": "boolean",
+              "default": true,
+              "description": "Chases and bats a ball of yarn along the floor."
+            }
+          },
+          "markdownDescription": "Which movement styles the cats use. The cats of a break are dealt out to the enabled styles in turn (Wanderer, Climber, Bouncer, Yarn chaser), so with few cats each style gets one first. If every style is switched off, all cats are Wanderers."
         }
       }
     },

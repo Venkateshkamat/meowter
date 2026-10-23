@@ -40,6 +40,8 @@ interface BootOpts {
   loadTime?: number;
   /** Timestamp of the first requestAnimationFrame callback (can precede loadTime, as in a real webview). */
   firstFrame?: number;
+  /** The enabled styles, as the page passes them in data-styles (all styles when omitted). */
+  styles?: string;
 }
 
 const TRANSFORM = /translate\((-?[\d.]+)px, (-?[\d.]+)px\) scaleX\((-?1)\)/;
@@ -53,7 +55,7 @@ function boot(width: number, height: number, catCount: number, opts: BootOpts = 
   let raf: ((t: number) => void) | undefined;
   let resizeListener: (() => void) | undefined;
   const els: FakeEl[] = [];
-  const posted: Array<{ type: string; cats?: number }> = [];
+  const posted: Array<{ type: string; cats?: number; styles?: string[] }> = [];
   const errors: unknown[] = [];
   const mk = (tag: string): FakeEl & Record<string, unknown> => {
     const e = {
@@ -90,6 +92,7 @@ function boot(width: number, height: number, catCount: number, opts: BootOpts = 
   const stage = mk('div');
   const body = mk('body');
   body.dataset.catCount = String(catCount);
+  if (opts.styles !== undefined) body.dataset.styles = opts.styles;
   const math = Object.create(Math) as Math;
   math.random = seeded(42);
   const win = {
@@ -114,7 +117,7 @@ function boot(width: number, height: number, catCount: number, opts: BootOpts = 
         public height: number
       ) {}
     },
-    acquireVsCodeApi: () => ({ postMessage: (m: { type: string; cats?: number }) => posted.push(m) }),
+    acquireVsCodeApi: () => ({ postMessage: (m: { type: string; cats?: number; styles?: string[] }) => posted.push(m) }),
     Math: math,
     Map,
     Set,
@@ -168,8 +171,8 @@ function boot(width: number, height: number, catCount: number, opts: BootOpts = 
   return { cats, track, posted, els, errors, advance, resize, pos };
 }
 
-function run(width: number, height: number, catCount: number, seconds: number) {
-  const b = boot(width, height, catCount);
+function run(width: number, height: number, catCount: number, seconds: number, styles?: string) {
+  const b = boot(width, height, catCount, { styles });
   b.advance(seconds);
   return b;
 }
@@ -185,7 +188,7 @@ describe('bundled webview script', () => {
   it('creates the requested number of pixel-art cats and reports ready', () => {
     const { cats, posted } = run(1000, 700, 8, 1);
     assert.strictEqual(cats.length, 8);
-    assert.strictEqual(JSON.stringify(posted), JSON.stringify([{ type: 'ready', cats: 8 }]));
+    assert.strictEqual(JSON.stringify(posted), JSON.stringify([{ type: 'ready', cats: 8, styles: ['wanderer', 'climber', 'bouncer', 'yarnChaser', 'wanderer', 'climber', 'bouncer', 'yarnChaser'] }]));
     for (const c of cats) {
       assert.strictEqual(c.width, FRAME_SIZE);
       assert.strictEqual(c.height, FRAME_SIZE);
@@ -233,8 +236,8 @@ describe('bundled webview script', () => {
     const high = track.filter((t) => t.minY < floor * 0.5);
     assert.ok(high.length >= 2, `bouncers reach the middle of the screen (${high.length})`);
     assert.ok(high.length <= 6, 'most cats stay near the floor and walls');
-    const lone = run(1000, H, 1, 30);
-    assert.ok(lone.track[0].minY < floor * 0.7, 'a single cat still bounces');
+    const lone = run(1000, H, 1, 30, 'bouncer');
+    assert.ok(lone.track[0].minY < floor * 0.7, 'a single Bouncer still bounces');
   });
 
   it('flips the sprite for both directions of travel', () => {
@@ -253,6 +256,91 @@ describe('bundled webview script', () => {
     const maxX = 1000 - (CONTENT_MAX_COL + 1) * scale;
     const climbers = track.filter((t) => t.minY < floor * 0.8 && (t.minX <= -CONTENT_MIN_COL * scale + 1 || t.maxX >= maxX - 1));
     assert.ok(climbers.length >= 1, 'wall climbing happened');
+  });
+
+  describe('movement styles (fallback cat tab)', () => {
+    const H = 700;
+    const W = 1000;
+    const geometry = (cats: ReturnType<typeof run>['cats']) => {
+      const scale = parseInt(cats[0].style.width, 10) / FRAME_SIZE;
+      return { scale, floor: H - FEET_ROWS * scale, maxX: W - (CONTENT_MAX_COL + 1) * scale, minX: -CONTENT_MIN_COL * scale };
+    };
+
+    it('deals the cats out to the enabled styles like the over-code scene: round-robin, fixed order', () => {
+      // Two enabled styles, four cats: climber, bouncer, climber, bouncer. Bouncers leave the floor early and often.
+      const { cats, track } = run(W, H, 4, 40, 'climber,bouncer');
+      const { floor } = geometry(cats);
+      const flying = track.filter((t) => t.minY < floor * 0.5);
+      assert.ok(flying.length >= 2, `the bouncers (cats 1 and 3) fly (${flying.length})`);
+      assert.ok(track[1].minY < floor * 0.5 && track[3].minY < floor * 0.5, 'cats 1 and 3 are the bouncers');
+    });
+
+    it('a small count gets one of each style first: 2 cats are a Wanderer and a Climber (no bouncing)', () => {
+      const { cats, track } = run(W, H, 2, 60);
+      const { floor, scale } = geometry(cats);
+      assert.ok(track[0].minY > floor - 40 * scale, 'cat 0, the Wanderer, stays near the floor');
+    });
+
+    it('wanderer: stays on the floor (hops only), never climbs, never has a yarn ball', () => {
+      const { cats, track, els } = run(W, H, 8, 240, 'wanderer');
+      const { floor, scale } = geometry(cats);
+      for (const t of track) {
+        assert.ok(t.minY > floor - 36 * scale, `only hops leave the floor (${floor - t.minY}px up)`);
+      }
+      assert.strictEqual(els.filter((e) => e.className === 'ball').length, 0, 'no yarn');
+      assert.ok(track.filter((t) => t.maxX - t.minX > 100).length >= 4, 'wanderers walk about');
+      assert.ok(track.some((t) => t.maxY - t.minY > 10), 'and hop');
+    });
+
+    it('climber: reaches a wall and climbs it, and also walks on the floor', () => {
+      const { cats, track } = run(W, H, 6, 120, 'climber');
+      const { floor, minX, maxX } = geometry(cats);
+      const climbers = track.filter((t) => t.minY < floor * 0.8 && (t.minX <= minX + 1 || t.maxX >= maxX - 1));
+      assert.ok(climbers.length >= 4, `most climbers climbed a wall (${climbers.length} of 6)`);
+      assert.ok(track.every((t) => t.maxX - t.minX > 50), 'all of them also move on the floor');
+    });
+
+    it('climbers use both walls and different heights instead of stacking up', () => {
+      const { cats, track } = run(W, H, 4, 40, 'climber');
+      const { floor, minX, maxX } = geometry(cats);
+      assert.ok(track.some((t) => t.minX <= minX + 1), 'someone climbs the left wall');
+      assert.ok(track.some((t) => t.maxX >= maxX - 1), 'someone climbs the right wall');
+      const heights = new Set(track.map((t) => Math.round(t.minY / 30)));
+      assert.ok(heights.size >= 3 && track.every((t) => t.minY < floor * 0.85), `heights ${[...heights]}`);
+    });
+
+    it('bouncer: every cat bounces up to the middle of the screen', () => {
+      const { cats, track } = run(W, H, 5, 60, 'bouncer');
+      const { floor } = geometry(cats);
+      assert.ok(track.every((t) => t.minY < floor * 0.5), 'all reach mid-height');
+    });
+
+    it('yarn chaser: has a ball, stays on the floor, never climbs', () => {
+      const { cats, track, els } = run(W, H, 4, 120, 'yarnChaser');
+      const { floor, scale } = geometry(cats);
+      const balls = els.filter((e) => e.className === 'ball');
+      assert.ok(balls.length >= 4, `every chaser got a ball (${balls.length})`);
+      assert.ok(balls.every((b) => b.puts >= 1), 'balls are drawn');
+      assert.ok(balls.some((b) => b.removed), 'and cleaned up between chases');
+      for (const t of track) {
+        assert.ok(t.minY >= floor - 1, `stays on the floor (${floor - t.minY}px up)`);
+        assert.ok(t.maxX - t.minX > 100 * (scale / 4), 'covers ground chasing');
+      }
+    });
+
+    it('an unknown or empty style list in the page still gives a working scene (all styles)', () => {
+      for (const styles of ['', 'nonsense,fighters']) {
+        const { cats, errors } = run(W, H, 8, 30, styles);
+        assert.strictEqual(cats.length, 8);
+        assert.strictEqual(errors.length, 0);
+      }
+    });
+
+    it('cats of one style differ from each other (not robotic)', () => {
+      const { track } = run(W, H, 12, 25, 'climber');
+      const heights = new Set(track.map((t) => Math.round(t.minY / 40)));
+      assert.ok(heights.size >= 3, `the climbs reach different heights (${heights.size})`);
+    });
   });
 
   describe('animation loop robustness', () => {

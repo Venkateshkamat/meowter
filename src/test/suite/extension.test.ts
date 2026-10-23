@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import type { MeowterTestApi } from '../../extension';
 import type { Notifier } from '../../notice';
+import { assignStyles, enabledStyles, STYLE_NAMES } from '../../catStyles';
 import { overlayWidthPx } from '../../overlayLayout';
 
 const EXT_ID = 'venkateshkamat.meowter';
@@ -216,6 +217,19 @@ suite('Meowter extension', () => {
     assert.strictEqual(cfg.inspect('breakIntervalMinutes')?.defaultValue, 50);
     assert.strictEqual(cfg.inspect('idleThresholdMinutes')?.defaultValue, 5);
     assert.strictEqual(cfg.inspect('catCount')?.defaultValue, 8);
+  });
+
+  test('the styles setting has a checkbox per style, all on by default', () => {
+    const cfg = vscode.workspace.getConfiguration('meowter');
+    assert.deepStrictEqual(cfg.inspect('styles')?.defaultValue, { wanderer: true, climber: true, bouncer: true, yarnChaser: true });
+    const ext = vscode.extensions.getExtension(EXT_ID);
+    const props = ext?.packageJSON.contributes.configuration.properties['meowter.styles'];
+    assert.deepStrictEqual(Object.keys(props.properties), [...STYLE_NAMES]);
+    for (const name of STYLE_NAMES) {
+      assert.strictEqual(props.properties[name].type, 'boolean');
+      const text: string = props.properties[name].description;
+      assert.ok(text.length > 10 && text.length <= 60, `${name} has a short description that fits the Settings UI label (${text.length} chars)`);
+    }
   });
 
   test('meowter.setBreakInterval is registered', async () => {
@@ -431,6 +445,76 @@ suite('Meowter extension', () => {
     const s = api.getState();
     assert.strictEqual(s.breakActive, false);
     assert.ok(s.activeMs >= 0);
+  });
+
+  /** Sets meowter.styles for one test; restores the default afterwards. */
+  async function withStyles(value: unknown, body: () => Promise<void>): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('meowter');
+    await cfg.update('styles', value, vscode.ConfigurationTarget.Global);
+    try {
+      await body();
+    } finally {
+      await vscode.workspace.getConfiguration('meowter').update('styles', undefined, vscode.ConfigurationTarget.Global);
+    }
+  }
+
+  suite('cat styles setting', () => {
+    test('over the code: the cats are dealt out round-robin to the styles that are on', async () => {
+      await openCode('meowter-test-a.ts', 80);
+      const want = Math.min(vscode.workspace.getConfiguration('meowter').get<number>('catCount') ?? 8, 8);
+      await api.startBreakNow();
+      await waitFor(() => api.getOverlayState().editors.length === 1, 'the editor is decorated');
+      assert.deepStrictEqual(api.getOverlayState().editors[0].styles, assignStyles(want));
+      await withStyles({ climber: false, yarnChaser: false }, async () => {
+        // The setting applies live: the decorations are rebuilt for the new assignment.
+        await waitFor(
+          () => JSON.stringify(api.getOverlayState().editors[0]?.styles) === JSON.stringify(assignStyles(want, enabledStyles({ climber: false, yarnChaser: false }))),
+          'the new styles are applied',
+          5000
+        );
+        assert.ok(api.getOverlayState().editors[0].styles.every((s) => s === 'wanderer' || s === 'bouncer'));
+      });
+      await waitFor(() => JSON.stringify(api.getOverlayState().editors[0]?.styles) === JSON.stringify(assignStyles(want)), 'back to all styles', 5000);
+    });
+
+    test('over the code: a single style, and all styles off falls back to the Wanderer', async () => {
+      await openCode('meowter-test-a.ts', 80);
+      await api.startBreakNow();
+      await waitFor(() => api.getOverlayState().editors.length === 1, 'the editor is decorated');
+      await withStyles({ wanderer: false, bouncer: false, yarnChaser: false }, async () => {
+        await waitFor(() => api.getOverlayState().editors[0]?.styles.every((s) => s === 'climber'), 'only climbers', 5000);
+      });
+      await withStyles({ wanderer: false, climber: false, bouncer: false, yarnChaser: false }, async () => {
+        await waitFor(() => api.getOverlayState().editors[0]?.styles.every((s) => s === 'wanderer'), 'only wanderers', 5000);
+        assert.ok(api.getOverlayState().editors[0].styles.length >= 1);
+      });
+    });
+
+    test('a small cat count gets one of each style first', async () => {
+      await openCode('meowter-test-a.ts', 80);
+      const cfg = vscode.workspace.getConfiguration('meowter');
+      await cfg.update('catCount', 3, vscode.ConfigurationTarget.Global);
+      try {
+        await api.startBreakNow();
+        await waitFor(() => api.getOverlayState().editors[0]?.cats === 3, 'three cats');
+        assert.deepStrictEqual(api.getOverlayState().editors[0].styles, ['wanderer', 'climber', 'bouncer']);
+      } finally {
+        await cfg.update('catCount', undefined, vscode.ConfigurationTarget.Global);
+      }
+    });
+
+    test('in the cat tab the page deals its cats out to the same styles (read at the start of the break)', async () => {
+      await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+      await withStyles({ wanderer: false, bouncer: false }, async () => {
+        await api.startBreakNow();
+        assert.strictEqual(api.getBreakMode(), 'tab');
+        await waitFor(() => api.getWebviewReport().ready, 'cat tab ready');
+        const report = api.getWebviewReport();
+        const want = vscode.workspace.getConfiguration('meowter').get<number>('catCount') ?? 8;
+        assert.deepStrictEqual(report.styles, assignStyles(want, enabledStyles({ wanderer: false, bouncer: false })));
+        await api.pause();
+      });
+    });
   });
 
   suite('cats over the code', () => {

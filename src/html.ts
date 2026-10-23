@@ -1,9 +1,13 @@
+import { CatStyle, formatStyleList } from './catStyles';
+
 export interface BreakHtmlOptions {
   cspSource: string;
   nonce: string;
   scriptUri: string;
   styleUri: string;
   catCount: number;
+  /** The enabled movement styles (the webview deals its cats out to them round-robin). */
+  styles: readonly CatStyle[];
 }
 
 /** Pure HTML builder for the break webview (strict CSP, nonce-based script). */
@@ -23,7 +27,7 @@ export function buildBreakHtml(o: BreakHtmlOptions): string {
   <link rel="stylesheet" href="${o.styleUri}">
   <title>Meowter</title>
 </head>
-<body data-cat-count="${o.catCount}">
+<body data-cat-count="${o.catCount}" data-styles="${formatStyleList(o.styles)}">
   <div id="stage" aria-hidden="true"></div>
   <script nonce="${o.nonce}" src="${o.scriptUri}"></script>
 </body>

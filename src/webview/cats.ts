@@ -1,7 +1,10 @@
 /* Runs inside the break webview. Compiled separately (DOM lib); scripts/bundle-webview.js
-   prepends the shared cat art (src/catArt.ts) as the global `CatArt`. */
+   prepends the shared cat art (src/catArt.ts) as the global `CatArt` and the shared
+   style assignment (src/catStyles.ts) as `CatStyles`. */
 declare function acquireVsCodeApi(): { postMessage(message: unknown): void };
 declare const CatArt: typeof import('../catArt');
+declare const CatStyles: typeof import('../catStyles');
+type CatStyle = import('../catStyles').CatStyle;
 
 (function () {
   const vscodeApi = acquireVsCodeApi();
@@ -53,21 +56,51 @@ declare const CatArt: typeof import('../catArt');
     wall: 1 | -1;
     climbTop: number;
     climbDown: boolean;
-    bouncer: boolean;
+    /** 0 = hanging for the first time on this climb, 1 = already went higher once. */
+    stage: 0 | 1;
+    /** The movement style: which moves this cat picks (see FLOOR_STATES) and what it does at a wall. */
+    style: CatStyle;
+    /** Which Climber this is (0, 1, 2...) and how many climbs it has made: they spread climbers over the walls and heights. */
+    slot: number;
+    climbs: number;
+    /** A Climber on its way to a wall (1 = right, -1 = left), or 0. */
+    seekWall: 1 | -1 | 0;
     ball: Ball | undefined;
   }
 
-  const FLOOR_STATES: Array<[State, number]> = [
-    ['idle', 7],
-    ['sit', 12],
-    ['lie', 9],
-    ['sleep', 7],
-    ['swipe', 8],
-    ['walk', 16],
-    ['run', 10],
-    ['jump', 9],
-    ['chase', 10]
-  ];
+  /**
+   * What each style does on the floor, with weights. Wanderers never chase or climb; Yarn chasers mostly chase;
+   * Climbers' main business (heading to a wall) is decided in pickFloorState; Bouncers only bounce.
+   */
+  const FLOOR_STATES: Record<CatStyle, Array<[State, number]>> = {
+    wanderer: [
+      ['idle', 7],
+      ['sit', 12],
+      ['lie', 9],
+      ['sleep', 7],
+      ['swipe', 8],
+      ['walk', 18],
+      ['run', 10],
+      ['jump', 9]
+    ],
+    climber: [
+      ['idle', 3],
+      ['sit', 4],
+      ['swipe', 3],
+      ['walk', 10],
+      ['run', 8],
+      ['jump', 3]
+    ],
+    bouncer: [['idle', 1]],
+    yarnChaser: [
+      ['chase', 40],
+      ['idle', 8],
+      ['sit', 8],
+      ['swipe', 6],
+      ['lie', 3],
+      ['walk', 4]
+    ]
+  };
 
   function rand(min: number, max: number): number {
     return min + Math.random() * (max - min);
@@ -226,16 +259,31 @@ declare const CatArt: typeof import('../catArt');
     dropBall(cat);
     cat.vx = 0;
     cat.vy = 0;
-    let total = 0;
-    for (const [, w] of FLOOR_STATES) total += w;
-    let r = Math.random() * total;
-    let next: State = 'idle';
-    for (const [s, w] of FLOOR_STATES) {
-      r -= w;
-      if (r <= 0) {
-        next = s;
-        break;
+    cat.seekWall = 0;
+    if (cat.style === 'bouncer') {
+      startBounce(cat);
+      return;
+    }
+    if (cat.style === 'climber' && Math.random() < 0.5) {
+      goToWall(cat);
+      return;
+    }
+    const states = FLOOR_STATES[cat.style];
+    const total = states.reduce((sum, [, w]) => sum + w, 0);
+    const roll = (): State => {
+      let r = Math.random() * total;
+      for (const [s, w] of states) {
+        r -= w;
+        if (r <= 0) {
+          return s;
+        }
       }
+      return states[0][0];
+    };
+    let next = roll();
+    // Not the same thing twice in a row (a second roll), so a cat does not look stuck.
+    if (next === cat.state) {
+      next = roll();
     }
     if (next === 'sleep' && cat.state !== 'lie' && Math.random() < 0.7) {
       next = 'lie';
@@ -243,29 +291,43 @@ declare const CatArt: typeof import('../catArt');
     beginFloorState(cat, next);
   }
 
+  /** A Climber sets off for a side wall, running or (a short way) strolling. */
+  function goToWall(cat: Cat): void {
+    cat.y = floorY();
+    // Climbers share the walls out: by slot and climb number they alternate sides (now and then the other one).
+    const wall: 1 | -1 = ((cat.slot + cat.climbs) % 2 === 0) !== (Math.random() < 0.25) ? -1 : 1;
+    const dist = Math.abs((wall === 1 ? maxX() : minX()) - cat.x);
+    const stroll = dist < W * 0.4 && Math.random() < 0.4;
+    cat.dir = wall;
+    cat.seekWall = wall;
+    cat.vx = wall * (stroll ? rand(12, 18) : rand(38, 52)) * scale;
+    setState(cat, stroll ? 'walk' : 'run');
+    cat.timer = 99;
+  }
+
   function beginFloorState(cat: Cat, next: State): void {
     cat.y = floorY();
     setState(cat, next);
     switch (next) {
       case 'idle':
-        cat.timer = rand(2, 4.5);
+        cat.timer = cat.style === 'yarnChaser' ? rand(1, 2.5) : rand(2, 4.5);
         break;
       case 'sit':
-        cat.timer = rand(3, 6);
+        cat.timer = cat.style === 'yarnChaser' ? rand(1.5, 3) : rand(3, 6);
         break;
       case 'lie':
-        cat.timer = rand(3, 5);
+        cat.timer = cat.style === 'yarnChaser' ? rand(2, 3) : rand(3, 5);
         break;
       case 'sleep':
         cat.timer = rand(6, 12);
         break;
       case 'swipe':
-        cat.timer = rand(1.6, 3);
+        cat.timer = cat.style === 'yarnChaser' ? rand(1.2, 2) : rand(1.6, 3);
         break;
       case 'walk':
         cat.dir = Math.random() < 0.5 ? 1 : -1;
         cat.vx = cat.dir * rand(12, 18) * scale;
-        cat.timer = rand(3, 7);
+        cat.timer = cat.style === 'yarnChaser' ? rand(2, 4) : rand(3, 7);
         break;
       case 'run':
         cat.dir = Math.random() < 0.5 ? 1 : -1;
@@ -292,8 +354,13 @@ declare const CatArt: typeof import('../catArt');
     cat.x = wall === 1 ? maxX() : minX();
     cat.vx = 0;
     cat.vy = -rand(20, 26) * scale;
-    cat.climbTop = floorY() * rand(0.2, 0.65);
+    // ...and spread over the height, so climbers do not stack up on the same spot.
+    const spread = (cat.slot * 0.618 + cat.climbs * 0.31 + rand(0, 0.04)) % 1;
+    cat.climbTop = floorY() * (0.2 + 0.5 * spread);
+    cat.climbs++;
     cat.climbDown = false;
+    cat.stage = 0;
+    cat.seekWall = 0;
     setState(cat, 'climb');
     cat.timer = 99;
   }
@@ -320,7 +387,7 @@ declare const CatArt: typeof import('../catArt');
       case 'sleep':
       case 'swipe':
         if (cat.timer <= 0) {
-          if (cat.state === 'lie' && Math.random() < 0.55) {
+          if (cat.state === 'lie' && cat.style !== 'yarnChaser' && Math.random() < 0.55) {
             beginFloorState(cat, 'sleep');
           } else {
             pickFloorState(cat);
@@ -356,7 +423,8 @@ declare const CatArt: typeof import('../catArt');
         if (cat.x <= minX() || cat.x >= maxX()) {
           const wall: 1 | -1 = cat.x >= maxX() ? 1 : -1;
           cat.x = clamp(cat.x, minX(), maxX());
-          if (cat.state !== 'chase' && Math.random() < 0.5) {
+          // Only Climbers climb: on purpose when they came for the wall, otherwise now and then when they bump into it.
+          if (cat.style === 'climber' && cat.state !== 'chase' && (cat.seekWall === wall || Math.random() < 0.5)) {
             startClimb(cat, wall);
           } else {
             cat.dir = wall === 1 ? -1 : 1;
@@ -391,13 +459,13 @@ declare const CatArt: typeof import('../catArt');
           cat.vy = 0;
           cat.vx = 0;
           setState(cat, 'land');
-          cat.timer = cat.bouncer ? 0.12 : 0.28;
+          cat.timer = cat.style === 'bouncer' ? 0.12 : 0.28;
         }
         break;
       }
       case 'land':
         if (cat.timer <= 0) {
-          if (cat.bouncer) {
+          if (cat.style === 'bouncer') {
             startBounce(cat);
           } else {
             pickFloorState(cat);
@@ -419,7 +487,14 @@ declare const CatArt: typeof import('../catArt');
       }
       case 'grab':
         if (cat.timer <= 0) {
-          if (Math.random() < 0.5) {
+          if (cat.stage === 0 && cat.y > floor * 0.2 && Math.random() < 0.3) {
+            // Not done: go a bit higher and hang again.
+            cat.stage = 1;
+            cat.climbTop = Math.max(floor * 0.12, cat.y - floor * rand(0.1, 0.25));
+            cat.climbDown = false;
+            cat.vy = -rand(20, 26) * scale;
+            setState(cat, 'climb');
+          } else if (Math.random() < 0.5) {
             cat.climbDown = true;
             cat.vy = rand(20, 26) * scale;
             setState(cat, 'climb');
@@ -436,7 +511,7 @@ declare const CatArt: typeof import('../catArt');
     draw(cat);
   }
 
-  function makeCat(index: number, order: number[], bouncer: boolean): Cat {
+  function makeCat(index: number, order: number[], style: CatStyle, slot: number): Cat {
     const el = document.createElement('canvas');
     el.className = 'cat';
     el.width = SIZE;
@@ -460,10 +535,14 @@ declare const CatArt: typeof import('../catArt');
       wall: 1,
       climbTop: 0,
       climbDown: false,
-      bouncer,
+      stage: 0,
+      style,
+      slot,
+      climbs: 0,
+      seekWall: 0,
       ball: undefined
     };
-    if (bouncer) {
+    if (style === 'bouncer') {
       // Start mid-air at a random point of a bounce so the screen fills up straight away.
       startBounce(cat);
       cat.y = rand(0.1, 0.9) * floorY();
@@ -579,15 +658,15 @@ declare const CatArt: typeof import('../catArt');
 
   scale = pickScale();
   const order = shuffle(Array.from({ length: CatArt.COATS.length }, (_, i) => i));
-  // About a quarter of the cats (at least one) bounce across the middle of the screen.
-  const bouncers = Math.max(1, Math.round(catCount / 4));
-  const bouncerIdx = new Set(shuffle(Array.from({ length: catCount }, (_, i) => i)).slice(0, bouncers));
+  // The same round-robin assignment of cats to the enabled styles as the over-code scene uses.
+  const styleOf = CatStyles.assignStyles(catCount, CatStyles.parseStyleList(document.body.dataset.styles));
+  let climberSlot = 0;
   for (let i = 0; i < catCount; i++) {
-    cats.push(makeCat(i, order, bouncerIdx.has(i)));
+    cats.push(makeCat(i, order, styleOf[i], styleOf[i] === 'climber' ? climberSlot++ : 0));
   }
   for (const cat of cats) draw(cat);
   window.addEventListener('resize', onResize);
   requestAnimationFrame(frame);
   document.body.dataset.ready = 'true';
-  vscodeApi.postMessage({ type: 'ready', cats: cats.length });
+  vscodeApi.postMessage({ type: 'ready', cats: cats.length, styles: cats.map((c) => c.style) });
 })();

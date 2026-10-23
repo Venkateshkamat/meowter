@@ -10,7 +10,8 @@ describe('buildBreakHtml', () => {
     nonce,
     scriptUri: 'vscode-resource:/cats.js',
     styleUri: 'vscode-resource:/cats.css',
-    catCount: 12
+    catCount: 12,
+    styles: ['climber', 'yarnChaser']
   });
 
   it('has no button and no pause text', () => {
@@ -32,6 +33,9 @@ describe('buildBreakHtml', () => {
   });
   it('passes the cat count', () => {
     assert.ok(html.includes('data-cat-count="12"'));
+  });
+  it('passes the enabled styles', () => {
+    assert.ok(html.includes('data-styles="climber,yarnChaser"'));
   });
   it('generates distinct nonces', () => {
     assert.notStrictEqual(makeNonce(), makeNonce());

@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { CatStyle } from './catStyles';
 import { buildBreakHtml, makeNonce } from './html';
 
 const REFOCUS_MIN_GAP_MS = 250;
@@ -8,6 +9,8 @@ export const BREAK_VIEW_TYPE = 'meowter.break';
 export interface WebviewReport {
   ready: boolean;
   cats: number;
+  /** The movement style of each cat in the tab. */
+  styles: string[];
 }
 
 /**
@@ -21,7 +24,7 @@ export class BreakPanel implements vscode.Disposable {
   private panel: vscode.WebviewPanel | undefined;
   /** Set right before a programmatic dispose so it is not treated as a user close. */
   private programmatic = new WeakSet<vscode.WebviewPanel>();
-  private report: WebviewReport = { ready: false, cats: 0 };
+  private report: WebviewReport = { ready: false, cats: 0, styles: [] };
   private readonly pauseEmitter = new vscode.EventEmitter<void>();
   readonly onDidRequestPause = this.pauseEmitter.event;
 
@@ -50,7 +53,7 @@ export class BreakPanel implements vscode.Disposable {
     return this.report;
   }
 
-  async show(catCount: number): Promise<void> {
+  async show(catCount: number, styles: readonly CatStyle[]): Promise<void> {
     if (this.panel) {
       return;
     }
@@ -67,19 +70,24 @@ export class BreakPanel implements vscode.Disposable {
       }
     );
     this.panel = panel;
-    this.report = { ready: false, cats: 0 };
+    this.report = { ready: false, cats: 0, styles: [] };
 
     panel.webview.html = buildBreakHtml({
       cspSource: panel.webview.cspSource,
       nonce: makeNonce(),
       scriptUri: panel.webview.asWebviewUri(vscode.Uri.joinPath(scriptRoot, 'cats.js')).toString(),
       styleUri: panel.webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'cats.css')).toString(),
-      catCount
+      catCount,
+      styles
     });
 
-    panel.webview.onDidReceiveMessage((msg: { type?: string; cats?: number }) => {
+    panel.webview.onDidReceiveMessage((msg: { type?: string; cats?: number; styles?: unknown }) => {
       if (msg?.type === 'ready') {
-        this.report = { ready: true, cats: typeof msg.cats === 'number' ? msg.cats : 0 };
+        this.report = {
+          ready: true,
+          cats: typeof msg.cats === 'number' ? msg.cats : 0,
+          styles: Array.isArray(msg.styles) ? msg.styles.filter((s): s is string => typeof s === 'string') : []
+        };
       }
     });
 

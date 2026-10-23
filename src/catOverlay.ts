@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { planScene, sceneDataUri } from './catScene';
+import { assignStyles, CatStyle } from './catStyles';
 import {
   AnchorMode,
   catsPerEditor,
@@ -26,6 +27,8 @@ export interface OverlayEditorState {
   heightPx: number;
   scale: number;
   cats: number;
+  /** The movement style of each cat on this editor. */
+  styles: CatStyle[];
   /** Share of the editor area's width this editor's column has (drives the width cap). */
   widthFraction: number;
   /** Widest line of the document in px (tabs expanded, plus Monaco's scroll room), rounded up to a bucket. */
@@ -40,6 +43,12 @@ export interface OverlayState {
   /** Decoration types created / disposed so far (to check that nothing leaks). */
   typesCreated: number;
   typesDisposed: number;
+}
+
+/** What the overlay draws: how many cats, and which movement styles are enabled (they are dealt out round-robin). */
+export interface OverlayConfig {
+  catCount: number;
+  styles: readonly CatStyle[];
 }
 
 interface Entry {
@@ -70,7 +79,7 @@ export class CatOverlay implements vscode.Disposable {
   private seed = (Date.now() % 100000) | 0;
   private created = 0;
   private disposedTypes = 0;
-  private catCount: () => number = () => 1;
+  private config: () => OverlayConfig = () => ({ catCount: 1, styles: assignStyles(1) });
   private fractions: number[] = [];
   private readonly widest = new Map<string, { version: number; columns: number }>();
   /** Widest-line width seen per document during this break; it never shrinks (Monaco's layer does not either). */
@@ -101,9 +110,9 @@ export class CatOverlay implements vscode.Disposable {
     };
   }
 
-  /** Starts (or re-applies) the overlay. `catCount` is read on every refresh. */
-  start(catCount: () => number): void {
-    this.catCount = catCount;
+  /** Starts (or re-applies) the overlay. `config` is read on every refresh, so a changed setting applies live. */
+  start(config: () => OverlayConfig): void {
+    this.config = config;
     const first = !this.running;
     if (first) {
       this.running = true;
@@ -259,10 +268,13 @@ export class CatOverlay implements vscode.Disposable {
         this.entries.delete(editor);
       }
     }
-    const perEditor = catsPerEditor(this.catCount(), candidates.length);
-    for (const editor of candidates) {
+    const { catCount, styles } = this.config();
+    const perEditor = catsPerEditor(catCount, candidates.length);
+    // Styles are dealt out over ALL the cats of all editors, so a small count still gets one of each style first.
+    const assignment = assignStyles(perEditor * candidates.length, styles);
+    for (const [index, editor] of candidates.entries()) {
       try {
-        this.apply(editor, perEditor);
+        this.apply(editor, perEditor, assignment.slice(index * perEditor, (index + 1) * perEditor));
       } catch (err) {
         console.error('Meowter: failed to decorate an editor', err);
       }
@@ -295,7 +307,7 @@ export class CatOverlay implements vscode.Disposable {
     return columns;
   }
 
-  private apply(editor: vscode.TextEditor, cats: number): void {
+  private apply(editor: vscode.TextEditor, cats: number, catStyles: CatStyle[]): void {
     const lh = this.lineHeightFor(editor);
     const layout: Layout | undefined = computeLayout(
       editor.visibleRanges.map((r) => ({ start: r.start.line, end: r.end.line })),
@@ -310,7 +322,7 @@ export class CatOverlay implements vscode.Disposable {
     const docKey = editor.document.uri.toString();
     const widestPx = holdPeak(this.peaks.get(docKey), widestLinePx(this.widestColumnsOf(editor), charWidth));
     this.peaks.set(docKey, widestPx);
-    const key = `${layout.scale}|${layout.heightPx}|${layout.anchor}|${cats}|${lh}|${fraction}|${widestPx}`;
+    const key = `${layout.scale}|${layout.heightPx}|${layout.anchor}|${cats}|${catStyles.join(',')}|${lh}|${fraction}|${widestPx}`;
     let entry = this.entries.get(editor);
     if (entry && entry.key !== key) {
       this.disposeType(entry);
@@ -326,12 +338,13 @@ export class CatOverlay implements vscode.Disposable {
       heightPx: layout.heightPx,
       scale: layout.scale,
       cats,
+      styles: catStyles,
       widthFraction: fraction,
       widestPx,
       widthCss: widthCapCss(fraction, widestPx)
     };
     if (!entry) {
-      const plans = planScene({ scale: layout.scale, heightPx: layout.heightPx, cats, seed: (this.seed += 7919) });
+      const plans = planScene({ scale: layout.scale, heightPx: layout.heightPx, cats, styles: catStyles, seed: (this.seed += 7919) });
       const css = overlayStyle(layout, lh, sceneDataUri(plans, layout.scale), fraction, widestPx);
       const type = vscode.window.createTextEditorDecorationType({ isWholeLine: true, backgroundColor: css });
       this.created++;

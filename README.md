@@ -1,6 +1,6 @@
 # Meowter
 
-A VS Code extension (also works in Cursor). After a configurable amount of active IDE use, small pixel-art cats take over your code: they appear on top of every visible text editor, walking and running along the bottom, sitting, napping, swiping, climbing the side edges, chasing yarn balls, and a few of them bouncing across the middle. Your IDE layout is not touched, and the cats never block typing or clicking.
+A VS Code extension (also works in Cursor). After a configurable amount of active IDE use, small pixel-art cats take over your code: they appear on top of every visible text editor, each moving in its own style (see [Cat styles](#cat-styles)): wandering along the bottom, climbing the side edges, bouncing across the middle, or chasing yarn balls. Your IDE layout is not touched, and the cats never block typing or clicking.
 
 A notification says **Time for a break 🐱** with one button, **I took a break ⏸**. Click it to send the cats away and restart the timer. Dismissing the notification (its ✕) counts as clicking the button.
 
@@ -23,6 +23,27 @@ Limitations:
 - At most 8 cats per editor and 16 in total are drawn (`meowter.catCount` still sets the number, up to those caps).
 - A notification left over in another window stays until dismissed (extensions cannot close it); it is ignored.
 
+## Cat styles
+
+Every cat has a movement style. The four styles:
+
+| Style | What the cat does |
+| --- | --- |
+| **Wanderer** | Walks, runs, sits, idles, lies down, sleeps, swipes and hops, always on the floor. |
+| **Climber** | Walks or runs to a side wall, climbs it, hangs and grabs (sometimes going higher and hanging again), then climbs down or drops, and repeats with some floor moves in between. |
+| **Bouncer** | Big bouncing arcs across the middle of the screen. |
+| **Yarn chaser** | Chases and bats a ball of yarn along the floor, with short rests. |
+
+`meowter.catCount` is the number of cats per editor over the code (at most 8 per editor and 16 over all editors together) and the total number of cats in the fallback tab. These cats are dealt out to the enabled styles in turn, in the order above, so with few cats each style gets one first: 1 cat is a Wanderer, 2 cats a Wanderer and a Climber, 4 cats one of each, 8 cats two of each. With several editors the cats of all editors together are dealt out this way (the first editor gets the first cats, the next editor continues the order). Climbers spread out over the two walls and over different heights. Coat colours are varied across cats whatever their style. The over-code cats and the fallback cat tab use the same assignment.
+
+Turn styles on and off with the **Meowter: Styles** setting in the Settings UI (one boolean per style), or in `settings.json`:
+
+```json
+"meowter.styles": { "wanderer": true, "climber": false, "bouncer": true, "yarnChaser": true }
+```
+
+A style that is missing from the object stays on. If you switch **all** styles off, every cat is a Wanderer. Over the code a change applies at once, even in the middle of a break; in the fallback cat tab it applies from the next break.
+
 ## Settings
 
 | Setting | Default | Meaning |
@@ -30,6 +51,7 @@ Limitations:
 | `meowter.breakIntervalMinutes` | 50 | Minutes of active IDE use before a break (min 1). |
 | `meowter.idleThresholdMinutes` | 5 | Minutes without input after which time stops counting (min 1). |
 | `meowter.catCount` | 8 | Number of cats shown during a break (1 to 30; at most 8 per editor and 16 over all editors). |
+| `meowter.styles` | all on | Which [cat styles](#cat-styles) are used: `wanderer`, `climber`, `bouncer`, `yarnChaser` (booleans). All off means Wanderers only. |
 
 Command: **Meowter: Set Break Interval** (`meowter.setBreakInterval`).
 

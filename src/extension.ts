@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ActivityTracker } from './activity';
 import { BreakPanel, WebviewReport } from './breakPanel';
 import { CatOverlay, OverlayState } from './catOverlay';
+import { CatStyle, enabledStyles } from './catStyles';
 import { Notifier, NOTICE_BUTTON, NOTICE_MESSAGE, shouldPauseForNotice } from './notice';
 import { SharedStateStore, StateWatcher } from './sharedState';
 import { SharedTimer } from './stateSync';
@@ -82,6 +83,8 @@ interface Settings {
   intervalMs: number;
   idleMs: number;
   catCount: number;
+  /** The enabled cat styles, in the fixed style order. */
+  styles: CatStyle[];
 }
 
 function readSettings(): Settings {
@@ -90,7 +93,8 @@ function readSettings(): Settings {
     intervalMs:
       normalizeMinutes(cfg.get('breakIntervalMinutes'), DEFAULT_BREAK_INTERVAL_MINUTES) * MS_PER_MINUTE,
     idleMs: normalizeMinutes(cfg.get('idleThresholdMinutes'), DEFAULT_IDLE_THRESHOLD_MINUTES) * MS_PER_MINUTE,
-    catCount: normalizeCatCount(cfg.get('catCount'))
+    catCount: normalizeCatCount(cfg.get('catCount')),
+    styles: enabledStyles(cfg.get('styles'))
   };
 }
 
@@ -188,9 +192,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Meowte
         breakMode = 'tab';
       }
       if (breakMode === 'overlay') {
-        overlay.start(() => settings.catCount);
+        overlay.start(() => ({ catCount: settings.catCount, styles: settings.styles }));
       } else if (!breakPanel.isOpen) {
-        await breakPanel.show(settings.catCount);
+        await breakPanel.show(settings.catCount, settings.styles);
       }
     } else {
       breakMode = undefined;

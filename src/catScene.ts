@@ -26,6 +26,7 @@ import {
   YARN_COLORS,
   yarnVars
 } from './catArt';
+import { assignStyles, CatStyle } from './catStyles';
 
 /** A pose shown by the plan: any animation, or running with a yarn ball in front. */
 export type Variant = AnimName | 'chase';
@@ -53,7 +54,8 @@ export interface CatPlan {
   duration: number;
   keys: Keyframe[];
   segs: Segment[];
-  bouncer: boolean;
+  /** The movement style this cycle was planned for. */
+  style: CatStyle;
   /** Seconds the whole cycle is shifted by so cats do not all start in the same pose. */
   phase: number;
 }
@@ -65,6 +67,8 @@ export interface SceneOptions {
   heightPx: number;
   cats: number;
   seed: number;
+  /** The style of each cat (its length is the number of cats). Default: `cats` cats round-robin over all styles. */
+  styles?: readonly CatStyle[];
 }
 
 export function mulberry32(seed: number): () => number {
@@ -79,6 +83,13 @@ export function mulberry32(seed: number): () => number {
 
 /** Speeds as fractions of the free width per second. */
 export const SPEED = { walk: 0.07, run: 0.26, chase: 0.22, hop: 0.9 } as const;
+
+/**
+ * The fastest a cat may travel sideways while in the air (fractions of the width per second). An arc's duration
+ * only depends on its height, so its horizontal step is limited to this, whatever the height: a low box or a
+ * long way to go makes more arcs, never a faster one.
+ */
+export const MAX_ARC_SPEED = 0.25;
 
 /** Cat sprite pixels above the floor that the head never exceeds when standing. */
 const TOP_ROWS = 24;
@@ -168,16 +179,30 @@ class Timeline {
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 
-/** Plans one cat's looping cycle. */
-export function planCat(rand: () => number, opts: { scale: number; heightPx: number; bouncer: boolean; coat: number; target?: number }): CatPlan {
-  const { scale: s, heightPx: H } = opts;
+/** Hop height range (px per scale unit) of a floor hop; also the most a Wanderer ever leaves the floor. */
+export const HOP_MAX_ROWS = 34;
+
+/**
+ * Plans one cat's looping cycle in the given movement style:
+ *  - wanderer: walks, runs, sits, idles, lies down, sleeps, swipes and hops, always on the floor;
+ *  - climber: runs to a side wall, climbs it, hangs and grabs, climbs down or drops, with floor moves in between;
+ *  - bouncer: big bouncing arcs across the middle of the screen;
+ *  - yarnChaser: chases and bats a ball of yarn along the floor, with short rests.
+ */
+export function planCat(
+  rand: () => number,
+  opts: { scale: number; heightPx: number; style: CatStyle; coat: number; target?: number; slot?: number }
+): CatPlan {
+  const { scale: s, heightPx: H, style } = opts;
   const gravity = 520 * s;
   const range = (a: number, b: number): number => a + rand() * (b - a);
   const topRoom = Math.max(0, H - TOP_ROWS * s);
   const p0 = range(0.08, 0.92);
   const tl = new Timeline(p0, rand() < 0.5);
   const target = opts.target ?? range(24, 40);
-  tl.hold(opts.bouncer ? 'land' : 'sit', range(1, 3));
+  const slot = opts.slot ?? 0;
+  let climbs = 0;
+  tl.hold(style === 'bouncer' ? 'land' : 'sit', range(1, 3));
 
   const randomTarget = (maxDist: number): number => {
     const dir = rand() < 0.5 ? -1 : 1;
@@ -186,71 +211,151 @@ export function planCat(rand: () => number, opts: { scale: number; heightPx: num
     return clamp(p, 0, 1);
   };
 
-  if (opts.bouncer) {
+  /** Rest or play on the spot; `short` keeps the rests brief. */
+  const rest = (short: boolean): void => {
+    const r = rand();
+    if (r < 0.4) tl.hold('sit', short ? range(1.2, 2.5) : range(3, 6));
+    else if (r < 0.7) tl.hold('idle', short ? range(1, 2) : range(2, 4.5));
+    else if (r < 0.88) tl.hold('swipe', short ? range(1.2, 2) : range(1.6, 3));
+    else tl.hold('lie', short ? range(1.5, 2.5) : range(3, 5));
+  };
+
+  const hops = (): void => {
+    const n = 1 + Math.floor(rand() * 3);
+    for (let i = 0; i < n; i++) {
+      const h = Math.max(12, range(18, HOP_MAX_ROWS) * s);
+      const dir = rand() < 0.5 ? -1 : 1;
+      tl.arc(h, clamp(tl.cur.p + dir * arcStep(h, range(0.02, 0.08)), 0, 1), gravity);
+      tl.hold('land', 0.28);
+    }
+  };
+
+  /** Seconds an arc of height h takes (up and down). */
+  const arcSeconds = (h: number): number => 2 * Math.sqrt((2 * h) / gravity);
+  /** The horizontal step an arc of height h may take: the wanted one, but never faster than MAX_ARC_SPEED. */
+  const arcStep = (h: number, wanted: number): number => Math.min(wanted, MAX_ARC_SPEED * arcSeconds(h));
+
+  /** One wanderer action. */
+  let lastWander = '';
+  const wanderStep = (): void => {
+    let r = rand();
+    // Not the same thing twice in a row, so the cat does not look stuck in a loop.
+    const kindOf = (x: number): string =>
+      x < 0.16 ? 'sit' : x < 0.24 ? 'idle' : x < 0.36 ? 'lie' : x < 0.44 ? 'swipe' : x < 0.64 ? 'walk' : x < 0.78 ? 'run' : 'hop';
+    if (kindOf(r) === lastWander) r = rand();
+    lastWander = kindOf(r);
+    if (r < 0.16) {
+      tl.hold('sit', range(3, 6));
+    } else if (r < 0.24) {
+      tl.hold('idle', range(2, 4.5));
+    } else if (r < 0.36) {
+      tl.hold('lie', range(3, 5));
+      if (rand() < 0.65) tl.hold('sleep', range(6, 11));
+    } else if (r < 0.44) {
+      tl.hold('swipe', range(1.6, 3));
+    } else if (r < 0.64) {
+      tl.move('walk', randomTarget(0.35), SPEED.walk);
+    } else if (r < 0.78) {
+      tl.move('run', randomTarget(0.6), SPEED.run);
+    } else {
+      hops();
+    }
+  };
+
+  /** Run to a wall, climb, hang, then climb down or drop. */
+  const climbStep = (): void => {
+    // Climbers share the walls out: by slot and climb number they alternate sides and spread over the height,
+    // so several climbers do not pile up on the same spot (now and then a cat picks the other side anyway).
+    const wall = ((slot + climbs) % 2 === 0) !== (rand() < 0.25) ? 0 : 1;
+    const dist = Math.abs(wall - tl.cur.p);
+    if (dist > 0.01) {
+      const stroll = dist < 0.4 && rand() < 0.4; // a short way to the wall may be a stroll
+      tl.move(stroll ? 'walk' : 'run', wall, stroll ? SPEED.walk : SPEED.run);
+    }
+    tl.cur.flip = wall === 0;
+    const spread = (slot * 0.618 + climbs * 0.31 + range(0, 0.04)) % 1;
+    tl.climb(Math.max(3 * s, (0.2 + 0.5 * spread) * topRoom), 22 * s);
+    tl.hold('grab', range(1.6, 3.2));
+    if (rand() < 0.3) {
+      // Not done yet: a bit higher (or back down a bit), and hang again.
+      const next = clamp(tl.cur.y + (rand() < 0.6 ? 1 : -1) * range(0.1, 0.25) * topRoom, 3 * s, Math.max(3 * s, 0.85 * topRoom));
+      tl.climb(next, 22 * s);
+      tl.hold('grab', range(1.2, 2.4));
+    }
+    if (rand() < 0.5) {
+      tl.climb(0, 22 * s);
+    } else {
+      tl.fall(wall === 0 ? 0.02 : -0.02, gravity);
+    }
+    tl.hold('land', 0.28);
+    tl.move('walk', clamp(wall === 0 ? range(0.1, 0.2) : range(0.8, 0.9), 0, 1), SPEED.walk);
+  };
+
+  /** Chase a yarn ball along the floor, bat it, and rest a moment. */
+  const chaseStep = (): void => {
+    // Head for the more open side, now and then the other way.
+    let dir: 1 | -1 = tl.cur.p < 0.5 ? 1 : -1;
+    if (rand() < 0.2) dir = dir === 1 ? -1 : 1;
+    const room = dir === 1 ? 0.95 - tl.cur.p : tl.cur.p - 0.05;
+    if (room < 0.25) {
+      const startP = dir === 1 ? range(0.05, 0.25) : range(0.75, 0.95);
+      tl.move('run', startP, SPEED.run);
+    }
+    const free = dir === 1 ? 0.95 - tl.cur.p : tl.cur.p - 0.05;
+    const endP = clamp(tl.cur.p + dir * range(Math.min(0.25, free), Math.min(0.5, free)), 0.02, 0.98);
+    tl.cur.flip = dir === -1;
+    tl.move('chase', endP, SPEED.chase);
+    tl.hold('idle', range(0.8, 1.6));
+    if (rand() < 0.35) rest(true);
+  };
+
+  if (style === 'bouncer') {
     let dir: 1 | -1 = rand() < 0.5 ? -1 : 1;
     while (tl.cur.t < target) {
       const h = Math.max(20, range(0.3, 0.8) * topRoom);
-      let p1 = tl.cur.p + dir * range(0.06, 0.16);
+      let p1 = tl.cur.p + dir * arcStep(h, range(0.06, 0.16));
       if (p1 < 0 || p1 > 1) {
         dir = dir === 1 ? -1 : 1;
-        p1 = clamp(tl.cur.p + dir * range(0.06, 0.16), 0, 1);
+        p1 = clamp(tl.cur.p + dir * arcStep(h, range(0.06, 0.16)), 0, 1);
       }
       tl.arc(h, p1, gravity);
       tl.hold('land', 0.12);
     }
-    // Close the loop: the last hop lands exactly where the cycle started.
-    tl.arc(Math.max(20, range(0.3, 0.6) * topRoom), p0, gravity);
-    tl.hold('land', 0.12);
+    // Close the loop with the same kind of arcs, steered back to where the cycle started (never one huge fast
+    // hop across the screen); the last one is a short arc that lands exactly on the start position.
+    for (let guard = 0; guard < 60 && Math.abs(tl.cur.p - p0) > 1e-9; guard++) {
+      const h = Math.max(20, range(0.3, 0.8) * topRoom);
+      const left = p0 - tl.cur.p;
+      const step = Math.min(Math.abs(left), arcStep(h, range(0.06, 0.16)));
+      tl.arc(h, step >= Math.abs(left) - 1e-9 ? p0 : tl.cur.p + Math.sign(left) * step, gravity);
+      tl.hold('land', 0.12);
+    }
+    if (Math.abs(tl.cur.p - p0) > 1e-9) {
+      // (cannot happen with sane inputs; keeps the loop closed regardless)
+      tl.move('run', p0, SPEED.run);
+    }
   } else {
-    while (tl.cur.t < target) {
-      const r = rand();
-      if (r < 0.18) {
-        tl.hold('sit', range(3, 6));
-      } else if (r < 0.26) {
-        tl.hold('idle', range(2, 4.5));
-      } else if (r < 0.38) {
-        tl.hold('lie', range(3, 5));
-        if (rand() < 0.65) tl.hold('sleep', range(6, 11));
-      } else if (r < 0.46) {
-        tl.hold('swipe', range(1.6, 3));
-      } else if (r < 0.60) {
-        tl.move('walk', randomTarget(0.35), SPEED.walk);
-      } else if (r < 0.70) {
-        tl.move('run', randomTarget(0.6), SPEED.run);
-      } else if (r < 0.78) {
-        const hops = 1 + Math.floor(rand() * 3);
-        for (let i = 0; i < hops; i++) {
-          tl.arc(Math.max(12, range(18, 34) * s), clamp(tl.cur.p + (rand() < 0.5 ? -1 : 1) * range(0.02, 0.08), 0, 1), gravity);
-          tl.hold('land', 0.28);
+    let chases = 0;
+    while (tl.cur.t < target || (style === 'climber' && climbs === 0) || (style === 'yarnChaser' && chases === 0)) {
+      if (style === 'wanderer') {
+        wanderStep();
+      } else if (style === 'climber') {
+        // Floor moves in between the climbs, so it is not all wall.
+        if (climbs > 0 || rand() < 0.4) {
+          const r = rand();
+          if (r < 0.35) tl.move('walk', randomTarget(0.3), SPEED.walk);
+          else if (r < 0.6) tl.move('run', randomTarget(0.5), SPEED.run);
+          else rest(true);
         }
-      } else if (r < 0.88) {
-        // Chase a yarn ball: it rolls just ahead of the cat; keep room for it on the facing side.
-        const dir = rand() < 0.5 ? -1 : 1;
-        const startP = dir === 1 ? range(0.05, 0.4) : range(0.6, 0.95);
-        if (Math.abs(startP - tl.cur.p) > 0.02) tl.move('run', startP, SPEED.run);
-        const endP = clamp(startP + dir * range(0.25, 0.45), dir === 1 ? 0.2 : 0.15, dir === 1 ? 0.8 : 0.95);
-        tl.cur.flip = dir === -1;
-        tl.move('chase', endP, SPEED.chase);
-        tl.hold('idle', range(1, 2));
+        climbStep();
+        climbs++;
       } else {
-        // Run to the nearest wall, climb, hang there, then climb down or drop.
-        const wall = tl.cur.p < 0.5 ? 0 : 1;
-        if (Math.abs(wall - tl.cur.p) > 0.01) tl.move('run', wall, SPEED.run);
-        tl.cur.flip = wall === 0;
-        const top = Math.max(3 * s, range(0.25, 0.7) * topRoom);
-        tl.climb(top, 22 * s);
-        tl.hold('grab', range(1.6, 3.2));
-        if (rand() < 0.5) {
-          tl.climb(0, 22 * s);
-        } else {
-          tl.fall(wall === 0 ? 0.02 : -0.02, gravity);
-        }
-        tl.hold('land', 0.28);
-        tl.move('walk', clamp(wall === 0 ? 0.12 : 0.88, 0, 1), SPEED.walk);
+        chaseStep();
+        chases++;
       }
     }
     // Close the loop: run back to where the cycle started.
-    if (Math.abs(tl.cur.p - p0) > 0.01) tl.move('run', p0, SPEED.run);
+    if (Math.abs(tl.cur.p - p0) > 1e-9) tl.move('run', p0, SPEED.run);
     tl.hold('sit', range(1, 2));
   }
   // The cycle starts in the pose it ends in: same facing at the start position.
@@ -262,24 +367,26 @@ export function planCat(rand: () => number, opts: { scale: number; heightPx: num
     duration,
     keys: tl.keys,
     segs: tl.segs,
-    bouncer: opts.bouncer,
+    style,
     phase: range(0, duration)
   };
 }
 
-/** Plans a scene: about a quarter of the cats (at least one) bounce, the rest live on floor and walls. */
+/**
+ * Plans a scene. `styles` is the style of each cat (see assignStyles); by default `cats` cats are dealt out
+ * round-robin over all styles. Coats are varied across cats whatever their style.
+ */
 export function planScene(o: SceneOptions): CatPlan[] {
   const rand = mulberry32(o.seed);
-  const n = Math.max(1, Math.floor(o.cats));
-  const bouncers = Math.max(1, Math.round(n / 4));
+  const styles = o.styles ?? assignStyles(o.cats);
   const order = Array.from({ length: COATS.length }, (_, i) => i);
   for (let i = order.length - 1; i > 0; i--) {
     const j = Math.floor(rand() * (i + 1));
     [order[i], order[j]] = [order[j], order[i]];
   }
-  const isBouncer = new Set(Array.from({ length: n }, (_, i) => i).sort(() => rand() - 0.5).slice(0, bouncers));
-  return Array.from({ length: n }, (_, i) =>
-    planCat(rand, { scale: o.scale, heightPx: o.heightPx, bouncer: isBouncer.has(i), coat: order[i % order.length] })
+  let climberSlot = 0;
+  return styles.map((style, i) =>
+    planCat(rand, { scale: o.scale, heightPx: o.heightPx, style, coat: order[i % order.length], slot: style === 'climber' ? climberSlot++ : 0 })
   );
 }
 

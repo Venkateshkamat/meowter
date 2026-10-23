@@ -1,6 +1,7 @@
 import * as assert from 'assert';
+import { assignStyles, CatStyle, enabledStyles, STYLE_NAMES } from '../../catStyles';
 import { ANIMATIONS, CONTENT_MAX_COL, CONTENT_MIN_COL, COATS, FEET_ROWS, FRAME_SIZE, frameNames, SCENE_TICK_HZ } from '../../catArt';
-import { buildSceneSvg, CatPlan, cellTimeline, cycleTicks, mulberry32, planCat, planCells, planScene, positionAt, sceneDataUri, sceneMetrics, stepKeys } from '../../catScene';
+import { buildSceneSvg, CatPlan, HOP_MAX_ROWS, MAX_ARC_SPEED, SPEED, cellTimeline, cycleTicks, mulberry32, planCat, planCells, planScene, positionAt, sceneDataUri, sceneMetrics, stepKeys } from '../../catScene';
 
 function checkXml(rawXml: string): Map<string, number> {
   const xml = rawXml.replace(/<style>[^<]*<\/style>/g, '<style></style>');
@@ -75,17 +76,24 @@ describe('catScene planning', () => {
     }
   });
 
-  it('about a quarter of the cats (at least one) bounce, the others stay low', () => {
-    for (const [cats, bouncers] of [[1, 1], [2, 1], [4, 1], [8, 2], [16, 4]] as const) {
-      const plans = planScene({ ...BASE, cats, seed: 11 });
-      assert.strictEqual(plans.filter((p) => p.bouncer).length, bouncers, `${cats} cats`);
-    }
-    const plans = planScene({ ...BASE, cats: 8, seed: 3 });
-    for (const p of plans) {
-      const maxY = Math.max(...p.keys.map((k) => k.y));
-      if (p.bouncer) assert.ok(maxY > 0.25 * BASE.heightPx, `bouncer reaches the middle (${maxY})`);
-      else assert.ok(maxY < 0.8 * BASE.heightPx);
-    }
+  it('deals the styles out round-robin and records each plan\'s style', () => {
+    const plans = planScene({ ...BASE, cats: 6, seed: 11 });
+    assert.deepStrictEqual(plans.map((p) => p.style), ['wanderer', 'climber', 'bouncer', 'yarnChaser', 'wanderer', 'climber']);
+    const one = planScene({ ...BASE, cats: 2, seed: 11 });
+    assert.deepStrictEqual(one.map((p) => p.style), ['wanderer', 'climber'], 'a small count gets one of each first');
+  });
+
+  it('honours an explicit per-cat style list (disabled styles, all disabled)', () => {
+    const plans = planScene({ ...BASE, cats: 99, seed: 2, styles: assignStyles(5, enabledStyles({ climber: false, yarnChaser: false })) });
+    assert.deepStrictEqual(plans.map((p) => p.style), ['wanderer', 'bouncer', 'wanderer', 'bouncer', 'wanderer']);
+    const fallback = planScene({ ...BASE, cats: 3, seed: 2, styles: assignStyles(3, enabledStyles({ wanderer: false, climber: false, bouncer: false, yarnChaser: false })) });
+    assert.ok(fallback.every((p) => p.style === 'wanderer'));
+    fallback.forEach((p) => checkPlan(p, BASE.scale, BASE.heightPx));
+  });
+
+  it('varies coats across cats of every style', () => {
+    const plans = planScene({ ...BASE, cats: COATS.length, seed: 4 });
+    assert.strictEqual(new Set(plans.map((p) => p.coat)).size, COATS.length);
   });
 
   it('uses the whole mix of behaviours across many cats: floor, walls, hops, chase, sleep', () => {
@@ -127,9 +135,9 @@ describe('catScene planning', () => {
     plans.forEach((p) => checkPlan(p, 3, 14 * 20));
   });
 
-  it('planCat honours an explicit target length and bouncer flag', () => {
-    const p = planCat(mulberry32(9), { ...BASE, bouncer: true, coat: 2, target: 20 });
-    assert.ok(p.bouncer && p.duration >= 20 && p.duration < 60);
+  it('planCat honours an explicit target length and style', () => {
+    const p = planCat(mulberry32(9), { ...BASE, style: 'bouncer', coat: 2, target: 20 });
+    assert.ok(p.style === 'bouncer' && p.duration >= 20 && p.duration < 60);
     assert.strictEqual(p.coat, 2);
   });
 });
@@ -162,9 +170,12 @@ describe('catScene stepping and cells', () => {
       for (const c of tl) assert.ok(names.has(c.name) || /^chase[0-3]$/.test(c.name), c.name);
     }
     // A walking cat steps through its walk frames (4 fps on an 8 Hz clock = a new frame every 2 ticks).
-    const walker = plans.find((p) => p.segs.some((s) => s.variant === 'walk'));
+    // (A walk that starts between two ticks rounds down for its frame count and would show the previous pose first.)
+    const startsOnTick = (s: { variant: string; t0: number }): boolean =>
+      s.variant === 'walk' && Math.round(s.t0 * SCENE_TICK_HZ) >= Math.ceil(s.t0 * SCENE_TICK_HZ - 1e-9);
+    const walker = plans.find((p) => p.segs.some(startsOnTick));
     assert.ok(walker);
-    const seg = walker.segs.find((s) => s.variant === 'walk')!;
+    const seg = walker.segs.find(startsOnTick)!;
     const tl = cellTimeline(walker);
     const t0 = Math.round(seg.t0 * SCENE_TICK_HZ);
     assert.deepStrictEqual(
@@ -270,5 +281,167 @@ describe('catScene SVG', () => {
     assert.ok(uri.startsWith('data:image/svg+xml;charset=utf-8,'));
     assert.ok(!/["\\;{}<>]/.test(uri.slice(uri.indexOf(',') + 1)));
     assert.ok(uri.length < 420000, `data uri is ${uri.length} bytes`);
+  });
+});
+
+describe('movement styles (over-code scene)', () => {
+  const SEEDS = Array.from({ length: 24 }, (_, i) => i + 1);
+  const plansOf = (style: CatStyle, seeds = SEEDS): CatPlan[] =>
+    seeds.map((seed) => planCat(mulberry32(seed), { ...BASE, style, coat: seed % COATS.length }));
+  const variantsOf = (plans: CatPlan[]): Set<string> => new Set(plans.flatMap((p) => p.segs.map((s) => s.variant)));
+  const maxYOf = (p: CatPlan): number => Math.max(...p.keys.map((k) => k.y));
+  const topRoom = BASE.heightPx - 24 * BASE.scale;
+
+  it('every style plans valid, seamless looping cycles (also in a low box)', () => {
+    for (const style of STYLE_NAMES) {
+      plansOf(style).forEach((p) => {
+        assert.strictEqual(p.style, style);
+        checkPlan(p, BASE.scale, BASE.heightPx);
+      });
+      for (const seed of [1, 2, 3]) checkPlan(planCat(mulberry32(seed), { scale: 3, heightPx: 14 * 20, style, coat: 0 }), 3, 14 * 20);
+    }
+  });
+
+  it('wanderer: walks, runs, sits, idles, lies, sleeps, swipes and hops, and stays on the floor', () => {
+    const plans = plansOf('wanderer');
+    const v = variantsOf(plans);
+    for (const want of ['walk', 'run', 'sit', 'idle', 'lie', 'sleep', 'swipe', 'jump', 'fall', 'land']) {
+      assert.ok(v.has(want), `a wanderer ${want}s`);
+    }
+    for (const never of ['climb', 'grab', 'chase']) assert.ok(!v.has(never), `a wanderer never uses ${never}`);
+    for (const p of plans) {
+      assert.ok(maxYOf(p) <= HOP_MAX_ROWS * BASE.scale + 1, `only hops leave the floor (${maxYOf(p)})`);
+      assert.ok(p.keys.every((k) => k.p > 0 && k.p < 1) , 'never goes to a wall');
+    }
+  });
+
+  it('climber: runs to a wall, climbs, hangs, comes down or drops, with floor moves in between', () => {
+    const plans = plansOf('climber');
+    for (const p of plans) {
+      const kinds = p.segs.map((s) => s.variant);
+      assert.ok(kinds.includes('climb') && kinds.includes('grab'), 'every climber climbs and hangs');
+      assert.ok(maxYOf(p) > 0.2 * topRoom, `reaches up the wall (${maxYOf(p)})`);
+      p.segs.forEach((seg) => {
+        if (seg.variant === 'climb' || seg.variant === 'grab') {
+          const key = p.keys.find((k) => k.t >= seg.t0 - 1e-9)!;
+          assert.ok(key.p === 0 || key.p === 1, 'on a side wall');
+          assert.strictEqual(seg.flip, key.p === 0, 'faces the wall');
+        }
+      });
+    }
+    const v = variantsOf(plans);
+    for (const want of ['walk', 'run', 'fall', 'land']) assert.ok(v.has(want), `climbers also ${want}`);
+    assert.ok(plans.some((p) => p.segs.filter((s) => s.variant === 'climb').length >= 3), 'some climbs have several stages');
+    assert.ok(plans.some((p) => p.segs.some((s) => s.variant === 'fall' && s.t1 - s.t0 > 0.3)), 'some climbers drop');
+    assert.ok(new Set(plans.map((p) => p.segs.length)).size >= 8, 'climbers do not all follow the same script');
+    assert.ok(['sit', 'idle', 'swipe', 'lie'].some((k) => v.has(k)), 'and they rest between climbs');
+  });
+
+  it('bouncer: big bouncing arcs across the middle of the screen', () => {
+    const plans = plansOf('bouncer');
+    for (const p of plans) {
+      assert.ok(maxYOf(p) > 0.25 * BASE.heightPx, `reaches the middle (${maxYOf(p)})`);
+      assert.ok(p.segs.every((s) => ['jump', 'fall', 'land'].includes(s.variant)), 'only bounces');
+      assert.ok(p.segs.filter((s) => s.variant === 'jump').length >= 5, 'bounces again and again');
+    }
+  });
+
+  it('yarn chaser: chases a ball of yarn along the floor, with short rests', () => {
+    const plans = plansOf('yarnChaser');
+    for (const p of plans) {
+      assert.ok(p.segs.some((s) => s.variant === 'chase'), 'has a ball to chase');
+      assert.strictEqual(maxYOf(p), 0, 'stays on the floor');
+      const chase = p.segs.filter((s) => s.variant === 'chase');
+      assert.ok(chase.length >= 2, 'chases more than once per cycle');
+    }
+    const v = variantsOf(plans);
+    for (const never of ['climb', 'grab', 'jump']) assert.ok(!v.has(never), `a chaser never uses ${never}`);
+    assert.ok(['idle', 'sit', 'swipe'].some((k) => v.has(k)), 'rests between chases');
+    // Rests are short: no nap longer than a few seconds.
+    for (const p of plans) {
+      for (const s of p.segs) {
+        if (['sit', 'idle', 'swipe', 'lie'].includes(s.variant)) assert.ok(s.t1 - s.t0 <= 3.1 || s === p.segs[0] || s === p.segs[p.segs.length - 1], `short rest (${s.variant} ${s.t1 - s.t0})`);
+        assert.notStrictEqual(s.variant, 'sleep');
+      }
+    }
+  });
+
+  it('chasing runs the way the cat faces and in both directions across plans', () => {
+    const dirs = new Set<boolean>();
+    for (const p of plansOf('yarnChaser')) p.segs.filter((s) => s.variant === 'chase').forEach((s) => dirs.add(s.flip));
+    assert.strictEqual(dirs.size, 2);
+  });
+
+  /** Horizontal speed of a segment in widths per second (the arc halves 'jump' and 'fall' each cover half of it). */
+  const speedOf = (p: CatPlan, seg: CatPlan['segs'][number]): number => {
+    const ks = p.keys.filter((k) => k.t >= seg.t0 - 1e-9 && k.t <= seg.t1 + 1e-9);
+    return seg.t1 > seg.t0 ? Math.abs(ks[ks.length - 1].p - ks[0].p) / (seg.t1 - seg.t0) : 0;
+  };
+
+  it('nothing moves sideways faster than its normal speed, loop closure included (no cross-screen teleport hops)', () => {
+    const limit: Record<string, number> = {
+      walk: SPEED.walk,
+      run: SPEED.run,
+      chase: SPEED.chase,
+      jump: MAX_ARC_SPEED,
+      fall: MAX_ARC_SPEED
+    };
+    for (const style of STYLE_NAMES) {
+      for (const [scale, heightPx] of [[4, 480], [3, 280], [4, 140]] as const) {
+        for (let seed = 1; seed <= 150; seed++) {
+          const p = planCat(mulberry32(seed), { scale, heightPx, style, coat: 0 });
+          for (const seg of p.segs) {
+            const max = limit[seg.variant];
+            const v = speedOf(p, seg);
+            if (max === undefined) {
+              assert.ok(v < 1e-9, `${style} ${seg.variant} stands still`);
+            } else {
+              assert.ok(v <= max * 1.05, `${style} ${seg.variant} speed ${v.toFixed(3)} > ${max} (seed ${seed}, ${heightPx}px)`);
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it('a bouncer closes its loop with ordinary arcs: the last arcs are not longer than the others', () => {
+    for (let seed = 1; seed <= 300; seed++) {
+      const p = planCat(mulberry32(seed), { ...BASE, style: 'bouncer', coat: 0 });
+      const jumps = p.segs.filter((s) => s.variant === 'jump');
+      for (const j of jumps) {
+        const ks = p.keys.filter((k) => k.t >= j.t0 - 1e-9);
+        const a = ks[0];
+        const land = p.keys.find((k) => k.t >= j.t1 + (j.t1 - j.t0) - 1e-9)!; // end of the matching fall
+        assert.ok(Math.abs(land.p - a.p) <= 0.16 + 1e-9, `one arc covers ${Math.abs(land.p - a.p).toFixed(3)} of the width (seed ${seed})`);
+      }
+    }
+  });
+
+  it('climbers in one scene spread out over the walls and heights instead of stacking', () => {
+    for (let seed = 1; seed <= 20; seed++) {
+      const plans = planScene({ ...BASE, cats: 6, seed, styles: Array<CatStyle>(6).fill('climber') });
+      const firstClimbs = plans.map((p) => {
+        const grab = p.segs.find((s) => s.variant === 'grab')!;
+        const k = p.keys.find((key) => key.t >= grab.t0 - 1e-9)!;
+        return { wall: k.p, y: k.y };
+      });
+      assert.deepStrictEqual(new Set(firstClimbs.map((c) => c.wall)), new Set([0, 1]), 'both walls are used');
+      for (let i = 0; i < firstClimbs.length; i++) {
+        for (let j = i + 1; j < firstClimbs.length; j++) {
+          if (firstClimbs[i].wall === firstClimbs[j].wall) {
+            assert.ok(Math.abs(firstClimbs[i].y - firstClimbs[j].y) >= 3, `two climbers at the same spot of wall ${firstClimbs[i].wall} (seed ${seed})`);
+          }
+        }
+      }
+    }
+  });
+
+  it('the scene SVG of each style is valid and animated', () => {
+    for (const style of STYLE_NAMES) {
+      const plans = [planCat(mulberry32(3), { ...BASE, style, coat: 0 })];
+      const svg = buildSceneSvg(plans, BASE.scale);
+      checkXml(svg);
+      assert.ok(svg.includes('@keyframes m0'));
+    }
   });
 });
