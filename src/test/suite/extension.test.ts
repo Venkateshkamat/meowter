@@ -236,6 +236,11 @@ suite('Meowter extension', () => {
     }
   });
 
+  test('declares support for untrusted and virtual workspaces', () => {
+    const caps = vscode.extensions.getExtension(EXT_ID)?.packageJSON.capabilities;
+    assert.deepStrictEqual(caps, { untrustedWorkspaces: { supported: true }, virtualWorkspaces: true });
+  });
+
   test('settings have the right defaults', () => {
     const cfg = vscode.workspace.getConfiguration('meowter');
     assert.strictEqual(cfg.inspect('breakIntervalMinutes')?.defaultValue, 50);
