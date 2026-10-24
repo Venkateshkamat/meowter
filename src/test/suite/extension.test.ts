@@ -8,7 +8,7 @@ import { assignStyles, enabledStyles, STYLE_NAMES } from '../../catStyles';
 import { overlayWidthPx } from '../../overlayLayout';
 import { EXTENSION_MODE_TEST } from '../../testApi';
 
-const EXT_ID = 'venkateshkamat.meowter';
+const EXT_ID = 'venkateshkamat.meowter-cats';
 const NOTICE_MESSAGE = 'Time for a break 🐱';
 const NOTICE_BUTTON = 'I took a break ⏸';
 const BREAK_STATUS = '🐱 I took a break ⏸';
