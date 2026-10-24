@@ -2,6 +2,12 @@
 
 All notable changes to Meowter are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.1] - 2026-10-24
+
+### Changed
+
+- Extension ID is now `venkateshkamat.meowter-cats` (display name still Meowter); packaging now uses an explicit file allowlist.
+
 ## [1.0.0] - 2026-10-23
 
 First public release.
