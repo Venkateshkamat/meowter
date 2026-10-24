@@ -1,0 +1,110 @@
+# Publishes the extension to the VS Code Marketplace and to Open VSX (which Cursor uses)
+# when a GitHub release is published, and attaches the .vsix to that release.
+#
+# - Pre-releases are skipped (they do not publish anywhere).
+# - Re-run a failed publish from the Actions tab: "Run workflow" with the tag (for example v1.0.2).
+#   Both stores are idempotent: a version that already exists there is skipped, not an error.
+# - Needs two repository secrets: VSCE_PAT (Marketplace) and OVSX_PAT (Open VSX). See "Releasing" in the README.
+#
+# Only the unit tests run here. The editor integration tests (npm test, npm run test:cursor) drive the
+# macOS /Applications editors, so they are run locally before a release is created.
+name: Publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish, for example v1.0.2 (the release must already exist)'
+        required: true
+        type: string
+
+# The same tag never publishes twice at once; a second run waits for the first.
+concurrency:
+  group: publish-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+# Least privilege: contents: write only to upload the .vsix to the release.
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Passed to scripts through the environment (never pasted into a script), as a tag name is user input.
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22 # vsce and ovsx need Node 22 or newer
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile
+        run: npm run compile
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Check that the tag matches package.json
+        id: version
+        run: node scripts/check-release.js version "$TAG"
+
+      - name: Package the extension
+        id: package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          npx vsce package --out "meowter-cats-${VERSION}.vsix"
+          echo "vsix=meowter-cats-${VERSION}.vsix" >> "$GITHUB_OUTPUT"
+
+      - name: Check the package contents
+        id: verify
+        env:
+          VSIX: ${{ steps.package.outputs.vsix }}
+        run: node scripts/check-release.js vsix "$VSIX"
+
+      # The two publish steps are independent: one store being down does not stop the other, and the job
+      # still ends red so the failed one can be re-run. A version that already exists is skipped.
+      - name: Publish to the VS Code Marketplace
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' }}
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          VSIX: ${{ steps.package.outputs.vsix }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "::error::The repository secret VSCE_PAT is not set. Add a Marketplace token under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          npx vsce publish --packagePath "$VSIX" --skip-duplicate
+
+      - name: Publish to Open VSX
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' }}
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+          VSIX: ${{ steps.package.outputs.vsix }}
+        run: |
+          if [ -z "$OVSX_PAT" ]; then
+            echo "::error::The repository secret OVSX_PAT is not set. Add an Open VSX token under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          npx ovsx publish "$VSIX" --skip-duplicate
+
+      - name: Attach the .vsix to the GitHub release
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VSIX: ${{ steps.package.outputs.vsix }}
+        run: gh release upload "$TAG" "$VSIX" --clobber

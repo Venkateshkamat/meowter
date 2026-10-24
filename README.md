@@ -49,6 +49,16 @@ npm test
 npx vsce package
 ```
 
+## Releasing
+
+Publishing is automatic: creating a GitHub release publishes the extension to the VS Code Marketplace and to Open VSX (for Cursor), and attaches the `.vsix` to the release.
+
+1. Bump `version` in `package.json` and add a `CHANGELOG.md` entry; run `npm test` locally (CI runs only the unit tests); push to `main`.
+2. Create a GitHub release with the tag `vX.Y.Z` (it must match `version`). Pre-releases are skipped and publish nothing.
+3. If a store failed (outage, expired token), fix it and re-run: Actions, Publish, "Run workflow" with the tag. A version a store already has is skipped.
+
+Needs two repository secrets (Settings, Secrets and variables, Actions): `VSCE_PAT` (Marketplace token) and `OVSX_PAT` (Open VSX token). The Open VSX namespace must exist once (`npx ovsx create-namespace <publisher> -p <token>`).
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
