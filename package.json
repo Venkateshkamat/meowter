@@ -55,6 +55,15 @@
     "onStartupFinished"
   ],
   "main": "./out/extension.js",
+  "files": [
+    "out/*.js",
+    "out/webview/cats.js",
+    "media/cats.css",
+    "media/icon.png",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "scripts": {
     "compile": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\" && tsc -p ./ && tsc -p ./tsconfig.webview.json && node scripts/bundle-webview.js",
     "watch": "tsc -watch -p ./",

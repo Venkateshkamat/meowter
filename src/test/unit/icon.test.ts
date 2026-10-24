@@ -20,8 +20,7 @@ describe('extension icon', () => {
     assert.strictEqual(png.subarray(png.length - 8, png.length - 4).toString('ascii'), 'IEND');
   });
 
-  it('is not excluded from the package', () => {
-    const ignore = fs.readFileSync(path.join(root, '.vscodeignore'), 'utf8').split(/\r?\n/);
-    assert.ok(!ignore.some((l) => l.trim() === 'media/icon.png' || l.trim() === 'media/**'));
+  it('is part of the package allowlist', () => {
+    assert.ok(pkg.files.includes('media/icon.png'));
   });
 });
