@@ -2,6 +2,12 @@
 
 All notable changes to Meowter are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.2] - 2026-10-24
+
+### Changed
+
+- Display name is now **Meowter: Cat Breaks** (the Marketplace reserved the old name).
+
 ## [1.0.1] - 2026-10-24
 
 ### Changed
