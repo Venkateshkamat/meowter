@@ -1,5 +1,10 @@
 # Meowter
 
+[![VS Marketplace downloads](https://vsmarketplacebadges.dev/downloads-short/venkateshkamat.meowter-cats.svg?label=VS%20Marketplace%20downloads)](https://marketplace.visualstudio.com/items?itemName=venkateshkamat.meowter-cats)
+[![Open VSX downloads](https://img.shields.io/open-vsx/dt/venkateshkamat/meowter-cats?label=Open%20VSX%20downloads&color=a60ee5)](https://open-vsx.org/extension/venkateshkamat/meowter-cats)
+[![Release](https://img.shields.io/github/v/release/Venkateshkamat/meowter?label=release)](https://github.com/Venkateshkamat/meowter/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/Venkateshkamat/meowter)](LICENSE)
+
 > Pixel-art cats take over your editor when it's time for a break.
 
 ![Meowter: two cats face off, hiss and fight in a dust cloud, while a third climbs the side of the editor and a fourth jumps across the code](media/demo.gif)
@@ -62,3 +67,9 @@ Needs two repository secrets (Settings, Secrets and variables, Actions): `VSCE_P
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+## Compatibility
+
+![VS Code 1.90+](https://img.shields.io/badge/VS%20Code-1.90%2B-0078d7)
+![Cursor supported](https://img.shields.io/badge/Cursor-supported-000000)
+![Platforms: macOS, Windows, Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)
