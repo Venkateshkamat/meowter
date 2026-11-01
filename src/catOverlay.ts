@@ -51,6 +51,15 @@ export interface OverlayConfig {
   styles: readonly CatStyle[];
 }
 
+/** A visible text editor cats can be drawn on. */
+export interface Surface {
+  editor: vscode.TextEditor;
+  /** The editor group it is shown in. */
+  column: number | undefined;
+  /** Share of its group's width: 0.5 for each side of a side-by-side diff, else 1. */
+  share: number;
+}
+
 interface Entry {
   type: vscode.TextEditorDecorationType;
   key: string;
@@ -92,9 +101,35 @@ export class CatOverlay implements vscode.Disposable {
 
   /** Editors that can show cats: real editor tabs (not panel/output editors, not notebook cells). */
   static candidates(): vscode.TextEditor[] {
-    return vscode.window.visibleTextEditors.filter(
-      (e) => e.viewColumn !== undefined && e.document.uri.scheme !== 'vscode-notebook-cell'
-    );
+    return CatOverlay.surfaces().map((s) => s.editor);
+  }
+
+  /**
+   * The editors cats are drawn on: editors in an editor group, and both sides of the diff shown in a group. (Cursor
+   * gives the two sides of a diff no view column, so they are matched to the group whose active tab is that diff.)
+   */
+  static surfaces(): Surface[] {
+    const diffColumns = new Map<string, number>();
+    for (const group of vscode.window.tabGroups.all) {
+      const input = group.activeTab?.input;
+      if (input instanceof vscode.TabInputTextDiff) {
+        diffColumns.set(input.original.toString(), group.viewColumn);
+        diffColumns.set(input.modified.toString(), group.viewColumn);
+      }
+    }
+    const surfaces: Surface[] = [];
+    for (const editor of vscode.window.visibleTextEditors) {
+      if (editor.document.uri.scheme === 'vscode-notebook-cell') {
+        continue;
+      }
+      const diffColumn = diffColumns.get(editor.document.uri.toString());
+      if (editor.viewColumn !== undefined) {
+        surfaces.push({ editor, column: editor.viewColumn, share: diffColumn === editor.viewColumn ? 0.5 : 1 });
+      } else if (diffColumn !== undefined) {
+        surfaces.push({ editor, column: diffColumn, share: 0.5 });
+      }
+    }
+    return surfaces;
   }
 
   get active(): boolean {
@@ -168,8 +203,8 @@ export class CatOverlay implements vscode.Disposable {
     if (!this.running) {
       return;
     }
-    const signature = CatOverlay.candidates()
-      .map((e) => `${e.viewColumn}:${e.document.uri.toString()}`)
+    const signature = CatOverlay.surfaces()
+      .map((s) => `${s.column}:${s.share}:${s.editor.document.uri.toString()}`)
       .join('|');
     if (signature !== this.layoutSignature) {
       this.layoutSignature = signature;
@@ -261,7 +296,9 @@ export class CatOverlay implements vscode.Disposable {
     if (!this.running) {
       return;
     }
-    const candidates = CatOverlay.candidates();
+    const surfaces = CatOverlay.surfaces();
+    const candidates = surfaces.map((s) => s.editor);
+    const columns = new Set(surfaces.map((s) => s.column)).size;
     for (const [editor, entry] of [...this.entries]) {
       if (!candidates.includes(editor)) {
         this.disposeType(entry);
@@ -273,9 +310,9 @@ export class CatOverlay implements vscode.Disposable {
     // Styles are dealt out over ALL the cats of all editors, so a small count still gets one of each style first.
     // A fighting pair stays together on one editor (see distributeStyles).
     const assignment = distributeStyles(assignStyles(perEditor * candidates.length, styles), perEditor, candidates.length);
-    for (const [index, editor] of candidates.entries()) {
+    for (const [index, surface] of surfaces.entries()) {
       try {
-        this.apply(editor, perEditor, assignment[index]);
+        this.apply(surface, columns, perEditor, assignment[index]);
       } catch (err) {
         console.error('Meowter: failed to decorate an editor', err);
       }
@@ -308,7 +345,9 @@ export class CatOverlay implements vscode.Disposable {
     return columns;
   }
 
-  private apply(editor: vscode.TextEditor, cats: number, catStyles: CatStyle[]): void {
+  /** `columns`: how many editor groups show cats (the width share used until the real layout is read). */
+  private apply(surface: Surface, columns: number, cats: number, catStyles: CatStyle[]): void {
+    const { editor } = surface;
     const lh = this.lineHeightFor(editor);
     const layout: Layout | undefined = computeLayout(
       editor.visibleRanges.map((r) => ({ start: r.start.line, end: r.end.line })),
@@ -317,7 +356,7 @@ export class CatOverlay implements vscode.Disposable {
     if (!layout) {
       return;
     }
-    const fraction = Math.round(widthFractionFor(this.fractions, editor.viewColumn, CatOverlay.candidates().length) * 1000) / 1000;
+    const fraction = Math.round(widthFractionFor(this.fractions, surface.column, columns) * surface.share * 1000) / 1000;
     const cfg = vscode.workspace.getConfiguration('editor', { uri: editor.document.uri, languageId: editor.document.languageId });
     const charWidth = charWidthPx(cfg.get<number>('fontSize', 14), cfg.get<number>('letterSpacing', 0));
     const docKey = editor.document.uri.toString();
@@ -332,7 +371,7 @@ export class CatOverlay implements vscode.Disposable {
     }
     const state: OverlayEditorState = {
       uri: editor.document.uri.toString(),
-      viewColumn: editor.viewColumn,
+      viewColumn: surface.column,
       anchorLine: layout.anchorLine,
       anchor: layout.anchor,
       rows: layout.rows,
