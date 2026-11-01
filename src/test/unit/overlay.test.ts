@@ -23,7 +23,8 @@ import {
   MAX_CATS_TOTAL,
   MIN_ROWS,
   overlayStyle,
-  scaleForHeight
+  scaleForLineHeight,
+  viewportRowsFrom
 } from '../../overlayLayout';
 import { NOTICE_BUTTON, NOTICE_MESSAGE, shouldPauseForNotice } from '../../notice';
 import { BREAK_STATUS_TEXT, formatStatusText, freshState, SharedState } from '../../timer';
@@ -39,40 +40,82 @@ describe('overlay layout', () => {
     assert.ok(computeLineHeight(1, 0, false) >= 8);
   });
 
-  it('anchors a long visible range to its last line and grows upward', () => {
-    const l = computeLayout([{ start: 100, end: 139 }], 20)!;
+  it('anchors a long visible range to its last line and grows upward, as tall as the viewport', () => {
+    const l = computeLayout([{ start: 100, end: 139 }], 20, { lineCount: 500 })!;
     assert.strictEqual(l.rows, 40);
     assert.strictEqual(l.anchor, 'bottom');
     assert.strictEqual(l.anchorLine, 139);
-    assert.strictEqual(l.heightRows, 40);
-    assert.strictEqual(l.heightPx, 800);
+    assert.strictEqual(l.heightRows, 39, 'the partly visible lines at the edges do not count twice');
+    assert.strictEqual(l.heightPx, 780);
+    assert.strictEqual(l.planHeightPx, 36 * 20, 'moves are planned for the height rounded down to a bucket');
     assert.strictEqual(l.scale, 4);
   });
 
-  it('anchors a short range (short file, end of file) to its first line and grows downward', () => {
-    const l = computeLayout([{ start: 64, end: 69 }], 20)!;
+  it('anchors a short file to its first line and grows downward', () => {
+    const l = computeLayout([{ start: 0, end: 5 }], 20, { lineCount: 6 })!;
     assert.strictEqual(l.rows, 6);
     assert.strictEqual(l.anchor, 'top');
-    assert.strictEqual(l.anchorLine, 64);
-    assert.strictEqual(l.heightRows, Math.ceil(MIN_ROWS / 4) * 4);
-    assert.ok(l.heightRows >= MIN_ROWS);
+    assert.strictEqual(l.anchorLine, 0);
+    assert.strictEqual(l.heightRows, MIN_ROWS);
   });
 
-  it('counts folded editors as several ranges and rounds the height up to a bucket', () => {
-    const l = computeLayout([{ start: 0, end: 9 }, { start: 30, end: 44 }], 20)!;
+  it('at the end of a file keeps the viewport height and puts the floor at the bottom of the editor', () => {
+    // 40 rows seen before; scrolled to the end, only 6 lines are left in view.
+    const end = computeLayout([{ start: 294, end: 299 }], 20, { lineCount: 300, viewportRows: 40 })!;
+    const top = computeLayout([{ start: 0, end: 39 }], 20, { lineCount: 300, viewportRows: 40 })!;
+    assert.strictEqual(end.anchor, 'top');
+    assert.strictEqual(end.anchorLine, 294);
+    assert.strictEqual(end.heightPx, top.heightPx, 'the same height (the floor stays at the bottom)');
+    assert.strictEqual(end.scale, top.scale, 'and the same cat size');
+    assert.strictEqual(end.planHeightPx, top.planHeightPx, 'and the same scene');
+    // The end of the file just filling the editor anchors to the bottom as usual.
+    assert.strictEqual(computeLayout([{ start: 260, end: 299 }], 20, { lineCount: 300, viewportRows: 40 })!.anchor, 'bottom');
+  });
+
+  it('with word wrap, anchors the top to the second visible line (the first may start above the editor)', () => {
+    const wrapped = computeLayout([{ start: 294, end: 299 }], 20, { lineCount: 300, viewportRows: 40, wraps: true })!;
+    assert.strictEqual(wrapped.anchor, 'top');
+    assert.strictEqual(wrapped.anchorLine, 295);
+    assert.strictEqual(wrapped.heightRows, 38);
+    const plain = computeLayout([{ start: 294, end: 299 }], 20, { lineCount: 300, viewportRows: 40 })!;
+    assert.deepStrictEqual([plain.anchorLine, plain.heightRows], [294, 39]);
+    // The top of a file is in view from its first line on; the bottom anchor is unaffected.
+    assert.strictEqual(computeLayout([{ start: 0, end: 5 }], 20, { lineCount: 6, wraps: true })!.anchorLine, 0);
+    assert.strictEqual(computeLayout([{ start: 100, end: 139 }], 20, { lineCount: 500, wraps: true })!.anchorLine, 139);
+    // A fold right after the first line: the next range's first line.
+    assert.strictEqual(computeLayout([{ start: 290, end: 290 }, { start: 296, end: 299 }], 20, { lineCount: 300, viewportRows: 40, wraps: true })!.anchorLine, 296);
+  });
+
+  it('learns the viewport rows: exact when every line is one row, else a lower bound; steady while scrolling', () => {
+    assert.strictEqual(viewportRowsFrom(undefined, 40, true), 40);
+    assert.strictEqual(viewportRowsFrom(40, 41, true), 40, 'a partly visible line coming and going is ignored');
+    assert.strictEqual(viewportRowsFrom(40, 39, true), 40);
+    assert.strictEqual(viewportRowsFrom(40, 30, true), 30, 'a smaller editor (a panel opened)');
+    assert.strictEqual(viewportRowsFrom(30, 45, true), 45);
+    assert.strictEqual(viewportRowsFrom(40, 6, false), 40, 'end of the file in view, or wrapped lines: keep what was seen');
+    assert.strictEqual(viewportRowsFrom(40, 31, false), 40);
+    assert.strictEqual(viewportRowsFrom(undefined, 6, false), 6);
+    assert.strictEqual(viewportRowsFrom(6, 20, false), 20);
+  });
+
+  it('counts folded editors as several ranges', () => {
+    const l = computeLayout([{ start: 0, end: 9 }, { start: 30, end: 44 }], 20, { lineCount: 200 })!;
     assert.strictEqual(l.rows, 25);
     assert.strictEqual(l.anchorLine, 44, 'last visible line, after the fold');
-    assert.strictEqual(l.heightRows, 28);
+    assert.strictEqual(l.heightRows, 24);
   });
 
   it('returns nothing when nothing is visible', () => {
     assert.strictEqual(computeLayout([], 20), undefined);
   });
 
-  it('picks the sprite scale from the overlay height', () => {
-    assert.strictEqual(scaleForHeight(200), 3);
-    assert.strictEqual(scaleForHeight(480), 4);
-    assert.strictEqual(scaleForHeight(1200), 5);
+  it('picks the sprite scale from the line height only', () => {
+    assert.strictEqual(scaleForLineHeight(21), 4, 'the default 14px font');
+    assert.strictEqual(scaleForLineHeight(18), 4);
+    assert.strictEqual(scaleForLineHeight(14), 3);
+    assert.strictEqual(scaleForLineHeight(26), 5);
+    assert.strictEqual(scaleForLineHeight(60), 5);
+    assert.strictEqual(scaleForLineHeight(8), 3);
   });
 
   it('caps cats per editor and in total', () => {
@@ -87,18 +130,19 @@ describe('overlay layout', () => {
   });
 
   it('builds the click-through, layered, full-width overlay style', () => {
-    const bottom = overlayStyle(computeLayout([{ start: 0, end: 39 }], 20)!, 20, 'data:image/svg+xml,x');
+    const bottom = overlayStyle(computeLayout([{ start: 0, end: 40 }], 20)!, 20, 'data:image/svg+xml,x');
     assert.ok(bottom.startsWith('transparent; '), 'starts with a valid background-color value');
     assert.ok(bottom.includes('pointer-events:none'));
     assert.ok(bottom.includes('position:absolute'));
     assert.ok(bottom.includes('bottom:10px !important') && bottom.includes('top:auto !important'));
-    assert.ok(bottom.includes('height:800px !important'), 'beats the inline height of the whole-line div');
-    assert.ok(bottom.includes('z-index:1 !important'), 'above the text, below the cursor');
+    assert.ok(bottom.includes('height:800px !important'), 'beats the inline height of the decoration div');
+    assert.ok(bottom.includes('z-index:10 !important'), 'above the text (Cursor paints it at 4), below hovers and suggestions');
+    assert.ok(bottom.includes('left:0 !important'), 'from the start of the line, not from the decorated character');
     assert.ok(bottom.includes('will-change:transform'), 'own compositor layer');
     assert.ok(bottom.includes('background-image:url("data:image/svg+xml,x")'));
     assert.ok(bottom.includes('background-size:100% 100%'));
     assert.ok(/(^|;\s*)width:min\(100%, max\(max\(120px/.test(bottom) && bottom.includes(') !important'), 'width decided in CSS: capped only when the widest line is wider than the estimate');
-    assert.ok(!/left:|right:/.test(bottom));
+    assert.ok(!/right:/.test(bottom));
     const split = overlayStyle(computeLayout([{ start: 0, end: 39 }], 20)!, 20, 'data:x', 0.5);
     assert.ok(split.includes('calc((100vw - 560px) * 0.5 - 180px)'));
     assert.ok(overlayStyle(computeLayout([{ start: 0, end: 39 }], 20)!, 20, 'data:x', 0.5, 880).includes('- 880px)'), 'the widest line is baked in');

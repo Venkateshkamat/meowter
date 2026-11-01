@@ -44,7 +44,8 @@ Command: **Meowter: Set Break Interval**.
 ## Known limitations
 
 - Cats move with the text when you scroll sideways.
-- Very long lines can make the cats' area narrower than the editor.
+- Very long lines can make the cats' area narrower than the editor (not with word wrap on).
+- When you scroll fast, the cats can vanish for a moment until they catch up with the new lines.
 
 ## Development
 

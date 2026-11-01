@@ -7,7 +7,7 @@
 
 /** Fewest rows the overlay covers, so cats have room even in short files or at the end of a file. */
 export const MIN_ROWS = 14;
-/** Overlay heights are rounded up to a multiple of this many rows (limits decoration churn). */
+/** The height the cats' moves are planned for is rounded down to a multiple of this many rows (limits re-planning). */
 export const ROW_BUCKET = 4;
 export const MAX_CATS_PER_EDITOR = 8;
 export const MAX_CATS_TOTAL = 16;
@@ -46,25 +46,51 @@ export interface Layout {
   /** Overlay height in rows and px. */
   heightRows: number;
   heightPx: number;
+  /** Height the cats' moves are planned for: the overlay height rounded down to a bucket (limits re-planning). */
+  planHeightPx: number;
   /** Pixels per sprite pixel. */
   scale: number;
 }
 
-export function scaleForHeight(heightPx: number): number {
-  if (heightPx < 320) return 3;
-  if (heightPx < 900) return 4;
-  return 5;
+/**
+ * Pixels per sprite pixel, from the editor's line height only: the cats keep one size wherever the editor is
+ * scrolled (21px lines, the default, give 4).
+ */
+export function scaleForLineHeight(lineHeight: number): number {
+  return Math.min(5, Math.max(3, Math.round(lineHeight / 5)));
 }
 
 /**
- * Chooses where the overlay is attached and how tall it is.
- *  - Enough visible rows: attach to the LAST visible line and grow upward, so the floor is the bottom
- *    of the visible text no matter how lines wrap.
- *  - Few rows (short file, or the end of a file scrolled up): attach to the FIRST visible line and
- *    grow downward into the empty space under the text.
+ * How many rows the editor's viewport shows, learnt from its visible ranges (the extension API has no pixel height).
+ * The number of visible lines is the viewport height only when every line takes one row and the end of the
+ * document is not in view. Otherwise it is a lower bound and the largest one seen is kept: with the end in view (a
+ * short file, or scrolled to the bottom) the lines stop above the bottom of the editor, and with word wrap on a long
+ * line takes several rows. A change of one row is the partly visible line at an edge coming and going while
+ * scrolling, and is ignored.
+ */
+export function viewportRowsFrom(previous: number | undefined, rows: number, exact: boolean): number {
+  if (!exact) {
+    return Math.max(previous ?? 0, rows);
+  }
+  if (previous !== undefined && Math.abs(rows - previous) <= 1) {
+    return previous;
+  }
+  return rows;
+}
+
+/**
+ * Chooses where the overlay is attached and how tall it is. The height is the viewport's (`viewportRows`, see
+ * viewportRowsFrom), not the number of lines in view, so the cats keep their room wherever the editor is scrolled.
+ *  - Normally: attach to the LAST visible line and grow upward, so the floor is the bottom of the visible text.
+ *  - When the visible lines stop above the bottom of the editor (end of the file in view) or are very few: attach
+ *    to the FIRST visible line and grow downward into the empty space under the text.
  * Returns undefined when nothing is visible.
  */
-export function computeLayout(ranges: readonly LineRange[], lineHeight: number): Layout | undefined {
+export function computeLayout(
+  ranges: readonly LineRange[],
+  lineHeight: number,
+  view: { lineCount?: number; viewportRows?: number; wraps?: boolean } = {}
+): Layout | undefined {
   if (ranges.length === 0) {
     return undefined;
   }
@@ -74,16 +100,25 @@ export function computeLayout(ranges: readonly LineRange[], lineHeight: number):
   }
   const first = ranges[0].start;
   const last = ranges[ranges.length - 1].end;
-  const heightRows = Math.ceil(Math.max(rows, MIN_ROWS) / ROW_BUCKET) * ROW_BUCKET;
+  const viewportRows = Math.max(rows, view.viewportRows ?? rows);
+  const endVisible = view.lineCount !== undefined && last >= view.lineCount - 1;
+  const anchor: AnchorMode = rows < MIN_ROWS || (endVisible && rows < viewportRows - 1) ? 'top' : 'bottom';
+  // The decoration is drawn on the first row of its line. With word wrap on, the first visible line may be scrolled
+  // half out of view with its first row above the editor, where Monaco draws nothing: the top anchor then uses the
+  // next line, which always starts in view, and the overlay is a row shorter.
+  const second = ranges[0].end > first ? first + 1 : ranges[1]?.start;
+  const skipFirst = anchor === 'top' && view.wraps === true && second !== undefined && first > 0;
+  // (the count includes the partly visible lines at the edges)
+  const heightRows = Math.max(MIN_ROWS, viewportRows - 1 - (skipFirst ? 1 : 0));
   const heightPx = heightRows * lineHeight;
-  const anchor: AnchorMode = rows >= MIN_ROWS ? 'bottom' : 'top';
   return {
     rows,
-    anchorLine: anchor === 'bottom' ? last : first,
+    anchorLine: anchor === 'bottom' ? last : skipFirst ? (second as number) : first,
     anchor,
     heightRows,
     heightPx,
-    scale: scaleForHeight(heightPx)
+    planHeightPx: Math.max(MIN_ROWS, Math.floor(heightRows / ROW_BUCKET) * ROW_BUCKET) * lineHeight,
+    scale: scaleForLineHeight(lineHeight)
   };
 }
 
@@ -232,15 +267,20 @@ export function widthFractionFor(fractions: readonly number[], viewColumn: numbe
   return 1 / Math.max(1, fractions.length || fallbackColumns);
 }
 
+/** Above the text (Cursor paints each line's text at z-index 4) and the cursor; below hovers and suggestions (1000). */
+export const OVERLAY_Z_INDEX = 10;
+
 /**
- * The CSS that turns a WHOLE-LINE decoration into the cat overlay. It is injected through the decoration's
- * `backgroundColor` (the raw text lands in the decoration's CSS rule), so the first token is a valid colour.
+ * The CSS that turns a decoration on ONE character of the anchor line into the cat overlay. It is injected through
+ * the decoration's `backgroundColor` (the raw text lands in the decoration's CSS rule), so the first token is a
+ * valid colour.
  *
- * Why a whole-line decoration: it is rendered as an absolutely positioned div as wide as the editor's visible
- * text area (inside Monaco's `.view-overlays`), unlike an inline `::before`, whose containing block is the text
- * of one line. Its z-index makes it paint above the text (Monaco's `.lines-content` is the stacking context),
- * `pointer-events:none` keeps typing and clicking working, and `will-change:transform` gives it its own
- * compositor layer so repainting the animation does not repaint the code underneath.
+ * The decoration covers only the first character of the line: a whole-line decoration is drawn once per wrapped
+ * row of its line, which showed the cats two or three times over when the anchor line was word-wrapped. Its box is
+ * an absolutely positioned div inside Monaco's `.view-overlays`, moved to the start of the line (`left:0`) and made
+ * as wide as the editor's text area. Its z-index makes it paint above the text (Monaco's `.lines-content` is the
+ * stacking context), `pointer-events:none` keeps typing and clicking working, and `will-change:transform` gives it
+ * its own compositor layer so repainting the animation does not repaint the code underneath.
  */
 export function overlayStyle(layout: Layout, lineHeight: number, imageUri: string, widthFraction = 1, widestPx = 0): string {
   // Bottom anchor: grow upward from the last visible line, lifted half a line so feet are not clipped when
@@ -250,10 +290,11 @@ export function overlayStyle(layout: Layout, lineHeight: number, imageUri: strin
     'transparent',
     'pointer-events:none',
     'position:absolute',
+    'left:0 !important',
     edge,
     `height:${layout.heightPx}px !important`,
     `width:${widthCapCss(widthFraction, widestPx)} !important`,
-    'z-index:1 !important',
+    `z-index:${OVERLAY_Z_INDEX} !important`,
     `background-image:url("${imageUri}")`,
     'background-repeat:no-repeat',
     'background-size:100% 100%',
