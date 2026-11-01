@@ -10,7 +10,10 @@ import {
   canPause,
   DEFAULT_BREAK_INTERVAL_MINUTES,
   DEFAULT_IDLE_THRESHOLD_MINUTES,
+  effectiveIntervalMs,
   formatStatusText,
+  graceForInterval,
+  IntervalGrace,
   isCounting,
   MS_PER_MINUTE,
   nextMidnight,
@@ -119,6 +122,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<Meowte
   );
   // Settings are read once and again only when they change, not on every tick.
   let settings = readSettings();
+  // Set when the interval was lowered below the time already counted (see IntervalGrace).
+  let intervalGrace: IntervalGrace | undefined;
+  /** The interval counted against right now. */
+  const intervalNow = (): number => effectiveIntervalMs(settings.intervalMs, intervalGrace, core.view);
   const activity = new ActivityTracker();
   const breakPanel = new BreakPanel(context.extensionUri);
   const overlay = new CatOverlay();
@@ -137,7 +144,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Meowte
   let shownBreak: boolean | undefined;
   let shownTooltip: string | undefined;
   const updateStatusBar = (state: SharedState): void => {
-    const { intervalMs } = settings;
+    const intervalMs = effectiveIntervalMs(settings.intervalMs, intervalGrace, state);
     const text = formatStatusText(state, intervalMs);
     if (text !== shownText) {
       shownText = text;
@@ -264,7 +271,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Meowte
 
   const flush = async (): Promise<void> => {
     try {
-      await core.flush(settings.intervalMs);
+      await core.flush(intervalNow());
     } catch (err) {
       console.error('Meowter: failed to write shared state', err);
     }
@@ -285,7 +292,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Meowte
       idleMs: settings.idleMs,
       breakActive: core.view.breakActive
     });
-    core.count({ now, counting, intervalMs: settings.intervalMs });
+    core.count({ now, counting, intervalMs: intervalNow() });
     if (core.flushDue(now)) {
       void flush();
     }
@@ -450,8 +457,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<Meowte
     { dispose: () => noEditorTimer && clearTimeout(noEditorTimer) },
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('meowter')) {
+        const previous = settings.intervalMs;
         settings = readSettings();
-        void tick(); // a lower interval may already be reached
+        if (settings.intervalMs !== previous) {
+          // A lower interval the time counted has already reached starts the break after a minute more of use, not
+          // mid-typing in the Settings editor; a value above the time counted needs no grace.
+          intervalGrace = graceForInterval(core.view, settings.intervalMs);
+        }
+        void tick();
       }
     }),
     vscode.window.onDidChangeWindowState((state) => {
@@ -492,7 +505,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Meowte
       await vscode.workspace
         .getConfiguration('meowter')
         .update('breakIntervalMinutes', minutes, vscode.ConfigurationTarget.Global);
-      settings = readSettings();
+      // (onDidChangeConfiguration applies the new interval)
       updateStatusBar(core.view);
     })
   );
@@ -506,7 +519,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Meowte
     clearTimeout(midnightTimer);
     watcher?.close();
     try {
-      await core.flush(settings.intervalMs);
+      await core.flush(intervalNow());
     } catch (err) {
       console.error('Meowter: failed to write shared state on shutdown', err);
     }

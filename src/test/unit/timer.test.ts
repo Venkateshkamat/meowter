@@ -9,7 +9,10 @@ import {
   applyNewDay,
   canPause,
   dayKey,
+  effectiveIntervalMs,
   formatStatusText,
+  graceForInterval,
+  INTERVAL_GRACE_MS,
   freshState,
   isCounting,
   isNewDay,
@@ -177,6 +180,35 @@ describe('timer', () => {
       assert.strictEqual(isNewDay(old, at(2, 8)), true);
       assert.strictEqual(sanitizeState({ updatedAt: at(1, 18), day: 'garbage' }).day, '2026-11-01');
       assert.strictEqual(sanitizeState({ updatedAt: at(1, 18), day: '2026-10-31' }).day, '2026-10-31');
+    });
+  });
+
+  describe('lowering the interval below the time counted', () => {
+    const counted = (activeMs: number, breakId = 2): ReturnType<typeof freshState> => ({ ...freshState(1000), activeMs, breakId });
+
+    it('needs no grace when the new interval is still ahead, or during a break', () => {
+      assert.strictEqual(graceForInterval(counted(10 * MIN), 30 * MIN), undefined);
+      assert.strictEqual(graceForInterval({ ...counted(10 * MIN), breakActive: true }, 3 * MIN), undefined);
+    });
+    it('typing "30" passes through "3": the break waits a minute of active use instead of starting at once', () => {
+      const s = counted(10 * MIN);
+      const grace = graceForInterval(s, 3 * MIN);
+      assert.ok(grace);
+      assert.strictEqual(effectiveIntervalMs(3 * MIN, grace, s), 10 * MIN + INTERVAL_GRACE_MS);
+      assert.strictEqual(applyDelta(s, 1000, effectiveIntervalMs(3 * MIN, grace, s), 2000).breakTriggered, false);
+      // Still a minute later the break is due.
+      const later = { ...s, activeMs: 10 * MIN + INTERVAL_GRACE_MS };
+      assert.strictEqual(applyDelta(later, 1000, effectiveIntervalMs(3 * MIN, grace, later), 2000).breakTriggered, true);
+      // A larger setting than the grace wins.
+      assert.strictEqual(effectiveIntervalMs(50 * MIN, grace, s), 50 * MIN);
+    });
+    it('the grace ends with the cycle: a pause, a break or a new break id', () => {
+      const s = counted(10 * MIN);
+      const grace = graceForInterval(s, 3 * MIN);
+      assert.strictEqual(effectiveIntervalMs(3 * MIN, grace, { ...s, activeMs: 0 }), 3 * MIN);
+      assert.strictEqual(effectiveIntervalMs(3 * MIN, grace, { ...s, breakActive: true }), 3 * MIN);
+      assert.strictEqual(effectiveIntervalMs(3 * MIN, grace, { ...s, breakId: 3 }), 3 * MIN);
+      assert.strictEqual(effectiveIntervalMs(3 * MIN, undefined, s), 3 * MIN);
     });
   });
 

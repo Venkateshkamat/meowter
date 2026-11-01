@@ -197,6 +197,37 @@ export function applyBreakNow(state: SharedState, intervalMs: number, now: numbe
   };
 }
 
+/** How much more active use a lowered interval still allows when the time already counted has reached it. */
+export const INTERVAL_GRACE_MS = MS_PER_MINUTE;
+
+/**
+ * A lowered break interval that the time already counted has reached does not start a break on the spot: the break
+ * comes after INTERVAL_GRACE_MS more of active use. Typing a new value in the Settings editor saves every
+ * intermediate value (typing "30" saves "3" first), and a break starting mid-typing would take the editor away.
+ * `fromActiveMs` and `breakId` tie the grace to the current cycle: a pause or a break ends it.
+ */
+export interface IntervalGrace {
+  breakId: number;
+  fromActiveMs: number;
+  untilMs: number;
+}
+
+/** The grace a change of the interval to `intervalMs` needs in `state`, or undefined when the interval is not reached. */
+export function graceForInterval(state: SharedState, intervalMs: number, graceMs = INTERVAL_GRACE_MS): IntervalGrace | undefined {
+  if (state.breakActive || state.activeMs < intervalMs) {
+    return undefined;
+  }
+  return { breakId: state.breakId, fromActiveMs: state.activeMs, untilMs: state.activeMs + graceMs };
+}
+
+/** The interval to count against: the setting, held off by a grace that still applies to this cycle. */
+export function effectiveIntervalMs(intervalMs: number, grace: IntervalGrace | undefined, state: SharedState): number {
+  if (!grace || state.breakActive || state.breakId !== grace.breakId || state.activeMs < grace.fromActiveMs) {
+    return intervalMs;
+  }
+  return Math.max(intervalMs, grace.untilMs);
+}
+
 /** Minutes left until the break, rounded up, never negative. */
 export function remainingMinutes(activeMs: number, intervalMs: number): number {
   const remainingMs = intervalMs - activeMs;
