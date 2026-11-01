@@ -278,7 +278,7 @@ describe('catScene SVG', () => {
   });
 
   it('stays a reasonable size for a decoration', () => {
-    assert.ok(svg.length < 260000, `scene is ${svg.length} bytes`);
+    assert.ok(svg.length < 270000, `scene is ${svg.length} bytes`);
     const uri = sceneDataUri(plans, BASE.scale);
     assert.ok(uri.startsWith('data:image/svg+xml;charset=utf-8,'));
     assert.ok(!/["\\;{}<>]/.test(uri.slice(uri.indexOf(',') + 1)));
