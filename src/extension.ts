@@ -13,6 +13,7 @@ import {
   formatStatusText,
   isCounting,
   MS_PER_MINUTE,
+  nextMidnight,
   normalizeCatCount,
   normalizeMinutes,
   parseIntervalInput,
@@ -31,6 +32,8 @@ const SAFETY_POLL_MS = 60_000;
 const FALLBACK_POLL_MS = 1000;
 /** Coalesces the burst of events one atomic write produces. */
 const WATCH_DEBOUNCE_MS = 30;
+/** The midnight check runs at least this often, so a sleeping laptop or a clock change cannot make it miss the day. */
+const MIDNIGHT_CHECK_MAX_MS = 60 * 60_000;
 
 export interface MeowterTestApi {
   /** The `vscode.ExtensionMode` this extension was activated in. */
@@ -288,7 +291,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<Meowte
     }
   };
 
+  // At 12 am local time the timer starts over, and a break still showing ends.
+  const startNewDayIfDue = async (): Promise<void> => {
+    const now = Date.now();
+    if (!core.isNewDay(now)) {
+      return;
+    }
+    try {
+      await core.startNewDay(now);
+    } catch (err) {
+      console.error('Meowter: failed to write shared state', err);
+    }
+  };
+
   const tick = async (): Promise<void> => {
+    await startNewDayIfDue();
     countTick();
     if (core.view.breakActive) {
       // The tick runs during a break anyway: one stat per second notices a pause written by another window even
@@ -356,6 +373,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<Meowte
   };
   startWatching();
   lastSignature = await store.signature();
+
+  // Unfocused windows do not tick: wake up at midnight (or at least every hour) so their surfaces follow the new day.
+  let midnightTimer: ReturnType<typeof setTimeout> | undefined;
+  const armMidnight = (): void => {
+    clearTimeout(midnightTimer);
+    const wait = Math.min(Math.max(1000, nextMidnight(Date.now()) - Date.now() + 1000), MIDNIGHT_CHECK_MAX_MS);
+    midnightTimer = setTimeout(() => {
+      armMidnight();
+      void externalRefresh().then(() => (core.isNewDay(Date.now()) ? tick() : undefined));
+    }, wait);
+  };
+  armMidnight();
   startPolling(watcher ? SAFETY_POLL_MS : FALLBACK_POLL_MS);
 
   // Ends the break and restarts the timer, whatever the state is.
@@ -441,6 +470,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Meowte
         clearInterval(tickTimer);
         clearInterval(pollTimer);
         clearTimeout(watchDebounce);
+        clearTimeout(midnightTimer);
         watcher?.close();
       }
     },
@@ -473,6 +503,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Meowte
     clearInterval(pollTimer);
     clearTimeout(watchDebounce);
     watchDebounce = undefined;
+    clearTimeout(midnightTimer);
     watcher?.close();
     try {
       await core.flush(settings.intervalMs);

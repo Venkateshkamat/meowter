@@ -25,10 +25,46 @@ export interface SharedState {
   breakId: number;
   /** Epoch ms of the last write. */
   updatedAt: number;
+  /**
+   * The local calendar day (see dayKey) the counted time belongs to. The timer starts over when the day changes.
+   * Files written before this field existed have none: their day is the day of `updatedAt` (see stateDay).
+   */
+  day?: string;
+}
+
+/** The local calendar day of an epoch ms time, as `YYYY-MM-DD` (the timer resets at 12 am local time). */
+export function dayKey(time: number): string {
+  const d = new Date(time);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** The day a state's counted time belongs to. */
+export function stateDay(state: SharedState): string {
+  return state.day ?? dayKey(state.updatedAt);
+}
+
+/** Whether `state` was counted on an earlier (or any other) day than `now`: the timer must start over. */
+export function isNewDay(state: SharedState, now: number): boolean {
+  return stateDay(state) !== dayKey(now);
+}
+
+/**
+ * The state for a new day: the countdown starts over and a running break ends (breakId is kept). Returns `state`
+ * itself when it already belongs to the day of `now`.
+ */
+export function applyNewDay(state: SharedState, now: number): SharedState {
+  return isNewDay(state, now) ? applyPause(state, now) : state;
+}
+
+/** Epoch ms of the next local midnight after `now`. */
+export function nextMidnight(now: number): number {
+  const d = new Date(now);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime();
 }
 
 export function freshState(now: number = Date.now()): SharedState {
-  return { version: STATE_VERSION, activeMs: 0, breakActive: false, breakId: 0, updatedAt: now };
+  return { version: STATE_VERSION, activeMs: 0, breakActive: false, breakId: 0, updatedAt: now, day: dayKey(now) };
 }
 
 /** Turns arbitrary parsed JSON into a valid state; anything unusable becomes fresh state. */
@@ -42,7 +78,8 @@ export function sanitizeState(raw: unknown, now: number = Date.now()): SharedSta
   const breakId =
     typeof r.breakId === 'number' && Number.isInteger(r.breakId) && r.breakId >= 0 ? r.breakId : 0;
   const updatedAt = typeof r.updatedAt === 'number' && Number.isFinite(r.updatedAt) ? r.updatedAt : now;
-  return { version: STATE_VERSION, activeMs, breakActive, breakId, updatedAt };
+  const day = typeof r.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.day) ? r.day : dayKey(updatedAt);
+  return { version: STATE_VERSION, activeMs, breakActive, breakId, updatedAt, day };
 }
 
 /** Returns a positive number >= min, or the fallback. */
@@ -128,15 +165,16 @@ export function applyDelta(state: SharedState, delta: number, intervalMs: number
     return { state, changed: false, breakTriggered: false };
   }
   return {
-    state: { version: STATE_VERSION, activeMs, breakActive, breakId, updatedAt: now },
+    // (the day stays the cycle's day: time added here never makes an old day's total count as today's)
+    state: { version: STATE_VERSION, activeMs, breakActive, breakId, updatedAt: now, day: stateDay(state) },
     changed: true,
     breakTriggered
   };
 }
 
-/** State after a pause: timer restarts, break ends. breakId is kept. */
+/** State after a pause: timer restarts (counting for the day of `now`), break ends. breakId is kept. */
 export function applyPause(state: SharedState, now: number): SharedState {
-  return { version: STATE_VERSION, activeMs: 0, breakActive: false, breakId: state.breakId, updatedAt: now };
+  return { version: STATE_VERSION, activeMs: 0, breakActive: false, breakId: state.breakId, updatedAt: now, day: dayKey(now) };
 }
 
 /** A user pause (status bar, command, notification, cat tab) only means something during a break. */
@@ -154,7 +192,8 @@ export function applyBreakNow(state: SharedState, intervalMs: number, now: numbe
     activeMs: Math.max(state.activeMs, intervalMs),
     breakActive: true,
     breakId: state.breakId + 1,
-    updatedAt: now
+    updatedAt: now,
+    day: stateDay(state)
   };
 }
 

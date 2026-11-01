@@ -14,6 +14,7 @@
 - Counts only the time you are actively using the editor, shared across all your windows.
 - When the break is due, small pixel cats play on top of your code. They never block typing or clicking.
 - Click **🐱 I took a break ⏸** in the status bar (or the notification) to send them away and restart the timer.
+- The timer starts over every day at 12 am local time (a break still showing then ends too).
 - If no editor is open, the cats play in a tab instead.
 - Works in VS Code and Cursor.
 

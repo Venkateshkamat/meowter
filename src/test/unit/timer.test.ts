@@ -6,11 +6,15 @@ import {
   applyTick,
   DEFAULT_CAT_COUNT,
   MIN_CAT_COUNT,
+  applyNewDay,
   canPause,
+  dayKey,
   formatStatusText,
   freshState,
   isCounting,
+  isNewDay,
   MAX_DELTA_MS,
+  nextMidnight,
   normalizeCatCount,
   normalizeMinutes,
   parseIntervalInput,
@@ -131,6 +135,48 @@ describe('timer', () => {
       assert.strictEqual(r.breakActive, true);
       assert.strictEqual(r.breakId, 1);
       assert.strictEqual(applyBreakNow(r, 50 * MIN, 6), r);
+    });
+  });
+
+  describe('daily reset at 12 am local time', () => {
+    const at = (d: number, h: number, m = 0, sec = 0): number => new Date(2026, 10, d, h, m, sec).getTime();
+
+    it('names the local calendar day', () => {
+      assert.strictEqual(dayKey(at(1, 0)), '2026-11-01');
+      assert.strictEqual(dayKey(at(1, 23, 59, 59)), '2026-11-01');
+      assert.strictEqual(dayKey(at(2, 0)), '2026-11-02');
+      assert.strictEqual(dayKey(new Date(2026, 0, 5, 12).getTime()), '2026-01-05');
+    });
+    it('finds the next local midnight', () => {
+      assert.strictEqual(nextMidnight(at(1, 15, 30)), at(2, 0));
+      assert.strictEqual(nextMidnight(at(1, 0)), at(2, 0));
+      assert.strictEqual(nextMidnight(new Date(2026, 11, 31, 22).getTime()), new Date(2027, 0, 1).getTime());
+    });
+    it('a state from an earlier day starts over: countdown reset, break ended, break id kept', () => {
+      const yesterday = { ...applyDelta(freshState(at(1, 9)), 30 * MIN, 50 * MIN, at(1, 23, 50)).state };
+      assert.strictEqual(isNewDay(yesterday, at(1, 23, 59, 59)), false);
+      assert.strictEqual(isNewDay(yesterday, at(2, 0, 0, 1)), true);
+      const next = applyNewDay(yesterday, at(2, 0, 0, 1));
+      assert.deepStrictEqual([next.activeMs, next.breakActive, next.breakId, next.day], [0, false, 0, '2026-11-02']);
+      const inBreak = applyBreakNow(yesterday, 50 * MIN, at(1, 23, 55));
+      const ended = applyNewDay(inBreak, at(2, 7));
+      assert.deepStrictEqual([ended.activeMs, ended.breakActive, ended.breakId], [0, false, inBreak.breakId]);
+    });
+    it('the same day is left alone (the very same object)', () => {
+      const s = applyDelta(freshState(at(1, 9)), 10 * MIN, 50 * MIN, at(1, 10)).state;
+      assert.strictEqual(applyNewDay(s, at(1, 23, 59)), s);
+    });
+    it('time added after midnight to an old day keeps the old day, so it is still reset', () => {
+      const s = applyDelta(freshState(at(1, 9)), 10 * MIN, 50 * MIN, at(2, 0, 0, 5)).state;
+      assert.strictEqual(s.day, '2026-11-01');
+      assert.strictEqual(isNewDay(s, at(2, 0, 0, 6)), true);
+    });
+    it('files written before the day was stored use the day of their last write', () => {
+      const old = sanitizeState({ version: 1, activeMs: 5 * MIN, breakActive: false, breakId: 3, updatedAt: at(1, 18) });
+      assert.strictEqual(old.day, '2026-11-01');
+      assert.strictEqual(isNewDay(old, at(2, 8)), true);
+      assert.strictEqual(sanitizeState({ updatedAt: at(1, 18), day: 'garbage' }).day, '2026-11-01');
+      assert.strictEqual(sanitizeState({ updatedAt: at(1, 18), day: '2026-10-31' }).day, '2026-10-31');
     });
   });
 

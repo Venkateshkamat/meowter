@@ -1,5 +1,15 @@
 import { StateIo } from './sharedState';
-import { applyBreakNow, applyDelta, applyPause, applyTick, DEFAULT_BREAK_INTERVAL_MINUTES, MS_PER_MINUTE, SharedState } from './timer';
+import {
+  applyBreakNow,
+  applyDelta,
+  applyNewDay,
+  applyPause,
+  applyTick,
+  DEFAULT_BREAK_INTERVAL_MINUTES,
+  isNewDay,
+  MS_PER_MINUTE,
+  SharedState
+} from './timer';
 
 /** How often accumulated active time is written to the shared file while it keeps growing. */
 export const FLUSH_INTERVAL_MS = 15_000;
@@ -13,8 +23,8 @@ export interface CountInput {
   intervalMs: number;
 }
 
-/** A local transition (break or pause) that has to reach the shared file. */
-type Unsaved = 'break' | 'pause' | undefined;
+/** A local transition (break, pause or the start of a new day) that has to reach the shared file. */
+type Unsaved = 'break' | 'pause' | 'day' | undefined;
 
 /**
  * The shared timer as one window sees it. No `vscode` import, so it is unit tested in plain Node.
@@ -178,7 +188,7 @@ export class SharedTimer {
     });
   }
 
-  private async writeLocalTransition(kind: 'break' | 'pause'): Promise<void> {
+  private async writeLocalTransition(kind: 'break' | 'pause' | 'day'): Promise<void> {
     const seq = this.seq;
     try {
       const file = await this.io.read();
@@ -186,6 +196,13 @@ export class SharedTimer {
       if (kind === 'pause') {
         next = applyPause(file, this.unsavedAt);
         await this.io.write(next);
+      } else if (kind === 'day') {
+        // Only a file still counting an earlier day is reset: another window may have started the day (and counted
+        // time in it) already.
+        next = applyNewDay(file, this.unsavedAt);
+        if (next !== file) {
+          await this.io.write(next);
+        }
       } else if (file.breakActive) {
         next = file; // another window started the break first: adopt it, start no second one
       } else {
@@ -196,7 +213,7 @@ export class SharedTimer {
         // (a newer local break or pause would have replaced `base` and `unsaved` and is written after this one)
         this.unsaved = undefined;
         this.breakAttempts = 0;
-        this.adopt(next, kind === 'pause');
+        this.adopt(next, kind !== 'break');
       }
     } catch (err) {
       if (this.seq === seq) {
@@ -240,6 +257,27 @@ export class SharedTimer {
     return this.flush();
   }
 
+  /** Whether the state shown belongs to an earlier day than `now` (the timer starts over at 12 am local time). */
+  isNewDay(now: number = this.clock()): boolean {
+    return isNewDay(this.base, now);
+  }
+
+  /**
+   * Starts the day of `now` when the state still belongs to an earlier day: the countdown starts over and a running
+   * break ends. Shown at once; resolves once it is in the file. A no-op on the same day.
+   */
+  startNewDay(now: number = this.clock()): Promise<void> {
+    if (!isNewDay(this.base, now)) {
+      return Promise.resolve();
+    }
+    this.base = applyNewDay(this.base, now);
+    this.pending = 0;
+    this.inflight = 0;
+    this.lastTickAt = undefined;
+    this.markUnsaved('day', now);
+    return this.flush();
+  }
+
   /** Starts a break now (no-op when one is running). Resolves once it is in the file. */
   breakNow(intervalMs: number, now: number = this.clock()): Promise<void> {
     this.intervalMs = intervalMs;
@@ -253,7 +291,7 @@ export class SharedTimer {
     return this.flush();
   }
 
-  private markUnsaved(kind: 'break' | 'pause', now: number): void {
+  private markUnsaved(kind: 'break' | 'pause' | 'day', now: number): void {
     this.unsaved = kind;
     this.unsavedAt = now;
     this.seq++;
