@@ -492,7 +492,7 @@ suite('Meowter extension', () => {
   suite('cat styles setting', () => {
     test('over the code: the cats are dealt out round-robin to the styles that are on', async () => {
       await openCode('meowter-test-a.ts', 80);
-      const want = Math.min(vscode.workspace.getConfiguration('meowter').get<number>('catCount') ?? 6, 8);
+      const want = vscode.workspace.getConfiguration('meowter').get<number>('catCount') ?? 6;
       assert.strictEqual(want, 6, 'six cats by default');
       await api.startBreakNow();
       await waitFor(() => api.getOverlayState().editors.length === 1, 'the editor is decorated');
@@ -570,13 +570,17 @@ suite('Meowter extension', () => {
       await openCode('meowter-test-pair-a.ts', 80);
       await openCode('meowter-test-pair-b.ts', 80, vscode.ViewColumn.Beside);
       const cfg = vscode.workspace.getConfiguration('meowter');
-      await cfg.update('catCount', 5, vscode.ConfigurationTarget.Global);
+      // Nine cats in the window: 5 + 4. Dealt in order (w c b y [f f] w c b) the pair would straddle the two editors.
+      await cfg.update('catCount', 9, vscode.ConfigurationTarget.Global);
       try {
         await api.startBreakNow();
-        await waitFor(() => api.getOverlayState().editors.length === 2 && api.getOverlayState().editors.every((e) => e.cats === 5), 'five cats on each editor');
+        await waitFor(
+          () => api.getOverlayState().editors.length === 2 && api.getOverlayState().editors.reduce((n, e) => n + e.cats, 0) === 9,
+          'nine cats in the window, shared over the two editors'
+        );
         const lists = api.getOverlayState().editors.map((e) => e.styles);
+        assert.deepStrictEqual(lists.map((l) => l.length).sort(), [4, 5]);
         for (const list of lists) {
-          assert.strictEqual(list.length, 5);
           assert.strictEqual(list.filter((s) => s === 'fighters').length % 2, 0, `no split pair: ${list}`);
         }
         assert.strictEqual(lists.flat().filter((s) => s === 'fighters').length, 2, 'the pair is whole, on one editor');
@@ -627,7 +631,7 @@ suite('Meowter extension', () => {
       assert.strictEqual(overlay.editors.length, 1);
       const info = overlay.editors[0];
       assert.strictEqual(info.uri, editor.document.uri.toString());
-      assert.ok(info.cats >= 1 && info.cats <= 8, `cats per editor ${info.cats}`);
+      assert.ok(info.cats >= 1 && info.cats <= 30, `cats per editor ${info.cats}`);
       assert.ok(info.heightPx >= 14 * 8, `overlay height ${info.heightPx}`);
       assert.ok(info.anchorLine >= 0 && info.anchorLine < 120);
       assert.strictEqual(info.anchor, 'bottom', 'a long visible range anchors to its last line');
@@ -640,11 +644,35 @@ suite('Meowter extension', () => {
       assert.strictEqual(vscode.window.tabGroups.all.flatMap((g) => g.tabs).length, 1);
     });
 
-    test('cats per editor follow the catCount setting (capped for performance)', async () => {
+    test('one editor gets all the cats of the catCount setting, up to 30', async () => {
       await openCode('meowter-test-a.ts', 120);
       await api.startBreakNow();
-      const want = Math.min(vscode.workspace.getConfiguration('meowter').get<number>('catCount') ?? 6, 8);
+      const want = vscode.workspace.getConfiguration('meowter').get<number>('catCount') ?? 6;
       assert.strictEqual(api.getOverlayState().editors[0].cats, want);
+      const cfg = vscode.workspace.getConfiguration('meowter');
+      await cfg.update('catCount', 30, vscode.ConfigurationTarget.Global);
+      try {
+        await waitFor(() => api.getOverlayState().editors[0]?.cats === 30, 'thirty cats');
+        assert.strictEqual(api.getOverlayState().editors[0].styles.length, 30);
+      } finally {
+        await cfg.update('catCount', undefined, vscode.ConfigurationTarget.Global);
+      }
+    });
+
+    test('the cats of the window are shared over its editors: 30 over two editors is 15 + 15', async () => {
+      await openCode('meowter-test-share-a.ts', 80);
+      await openCode('meowter-test-share-b.ts', 80, vscode.ViewColumn.Beside);
+      const cfg = vscode.workspace.getConfiguration('meowter');
+      await cfg.update('catCount', 30, vscode.ConfigurationTarget.Global);
+      try {
+        await api.startBreakNow();
+        await waitFor(
+          () => api.getOverlayState().editors.length === 2 && api.getOverlayState().editors.every((e) => e.cats === 15),
+          'fifteen cats on each editor'
+        );
+      } finally {
+        await cfg.update('catCount', undefined, vscode.ConfigurationTarget.Global);
+      }
     });
 
     test('pause removes every decoration', async () => {

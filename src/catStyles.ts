@@ -78,19 +78,20 @@ function unitsOf(styles: readonly CatStyle[]): CatStyle[][] {
 }
 
 /**
- * Shares one list of styles (from assignStyles) out over editors that get `perEditor` cats each, in order,
- * without ever splitting a fighting pair across two editors. When the next unit is a pair and only one slot is
- * left in the editor, the first single cat further down the list takes the slot; if there is none, that slot is
- * a Wanderer. The cats of one editor are therefore always exactly `perEditor`, and the total number of cats is
- * unchanged (only the order moves).
+ * Shares one list of styles (from assignStyles) out over editors, in order, without ever splitting a fighting pair
+ * across two editors. Each editor gets `perEditor` cats: one number for all of them (then `editors` says how many),
+ * or one number per editor. When the next unit is a pair and only one slot is left in the editor, the first single
+ * cat further down the list takes the slot; if there is none, that slot is a Wanderer. The cats of one editor are
+ * therefore always exactly its count, and the total number of cats is unchanged (only the order moves).
  */
-export function distributeStyles(styles: readonly CatStyle[], perEditor: number, editors: number): CatStyle[][] {
+export function distributeStyles(styles: readonly CatStyle[], perEditor: number | readonly number[], editors = 1): CatStyle[][] {
+  const counts = typeof perEditor === 'number' ? Array<number>(editors).fill(perEditor) : perEditor;
   const queue = unitsOf(styles);
   const result: CatStyle[][] = [];
-  for (let e = 0; e < editors; e++) {
+  for (const count of counts) {
     const mine: CatStyle[] = [];
-    while (mine.length < perEditor) {
-      const room = perEditor - mine.length;
+    while (mine.length < count) {
+      const room = count - mine.length;
       if (queue.length === 0) {
         mine.push(FALLBACK_STYLE);
       } else if (queue[0].length <= room) {

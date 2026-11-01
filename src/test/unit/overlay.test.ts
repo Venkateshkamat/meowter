@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import {
-  catsPerEditor,
+  catsForEditors,
   holdPeak,
   charWidthPx,
   lineColumns,
@@ -19,8 +19,6 @@ import {
   SIDE_ALLOWANCE_PX,
   widthCapCss,
   widthFractionFor,
-  MAX_CATS_PER_EDITOR,
-  MAX_CATS_TOTAL,
   MIN_ROWS,
   overlayStyle,
   scaleForLineHeight,
@@ -118,15 +116,23 @@ describe('overlay layout', () => {
     assert.strictEqual(scaleForLineHeight(8), 3);
   });
 
-  it('caps cats per editor and in total', () => {
-    assert.strictEqual(catsPerEditor(8, 1), 8);
-    assert.strictEqual(catsPerEditor(30, 1), MAX_CATS_PER_EDITOR);
-    assert.strictEqual(catsPerEditor(30, 2), MAX_CATS_TOTAL / 2);
-    assert.strictEqual(catsPerEditor(30, 4), MAX_CATS_TOTAL / 4);
-    assert.strictEqual(catsPerEditor(30, 100), 1);
-    assert.strictEqual(catsPerEditor(1, 3), 1);
-    assert.strictEqual(catsPerEditor(0, 1), 1);
-    assert.ok(catsPerEditor(30, 3) * 3 <= MAX_CATS_TOTAL);
+  it('shares the window\'s cats out over its editors, with no cap (30 means 30)', () => {
+    assert.deepStrictEqual(catsForEditors(30, 1), [30]);
+    assert.deepStrictEqual(catsForEditors(30, 2), [15, 15]);
+    assert.deepStrictEqual(catsForEditors(30, 4), [8, 8, 7, 7]);
+    assert.deepStrictEqual(catsForEditors(5, 2), [3, 2]);
+    assert.deepStrictEqual(catsForEditors(6, 1), [6]);
+    for (let cats = 2; cats <= 30; cats++) {
+      for (let editors = 1; editors <= 6; editors++) {
+        const counts = catsForEditors(cats, editors);
+        assert.strictEqual(counts.length, editors);
+        assert.strictEqual(counts.reduce((a, b) => a + b, 0), cats, `${cats} cats over ${editors} editors`);
+        assert.ok(Math.max(...counts) - Math.min(...counts) <= 1, 'as even as possible');
+      }
+    }
+    assert.deepStrictEqual(catsForEditors(2, 3), [1, 1, 0], 'more editors than cats: the last ones get none');
+    assert.deepStrictEqual(catsForEditors(4, 0), []);
+    assert.deepStrictEqual(catsForEditors(NaN, 1), [1]);
   });
 
   it('builds the click-through, layered, full-width overlay style', () => {

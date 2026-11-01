@@ -36,7 +36,7 @@ Cats are dealt out to the enabled styles in turn, so the default 6 cats are one 
 | --- | --- | --- |
 | `meowter.breakIntervalMinutes` | 50 | Minutes of active use before a break. |
 | `meowter.idleThresholdMinutes` | 5 | Minutes without input after which time stops counting. |
-| `meowter.catCount` | 6 | Cats per editor (2 to 30). |
+| `meowter.catCount` | 6 | Cats in each window (2 to 30), shared out over its visible editors. |
 | `meowter.styles` | all on | Turn each style on or off: `wanderer`, `climber`, `bouncer`, `yarnChaser`, `fighters`. |
 
 Command: **Meowter: Set Break Interval**.

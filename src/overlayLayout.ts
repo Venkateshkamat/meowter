@@ -9,8 +9,6 @@
 export const MIN_ROWS = 14;
 /** The height the cats' moves are planned for is rounded down to a multiple of this many rows (limits re-planning). */
 export const ROW_BUCKET = 4;
-export const MAX_CATS_PER_EDITOR = 8;
-export const MAX_CATS_TOTAL = 16;
 
 const GOLDEN_RATIO_MAC = 1.5;
 const GOLDEN_RATIO_OTHER = 1.35;
@@ -122,10 +120,16 @@ export function computeLayout(
   };
 }
 
-/** How many cats one editor gets, given the setting and how many editors show cats. */
-export function catsPerEditor(catCount: number, editors: number): number {
-  const share = Math.max(1, Math.floor(MAX_CATS_TOTAL / Math.max(1, editors)));
-  return Math.max(1, Math.min(Math.round(catCount), MAX_CATS_PER_EDITOR, share));
+/**
+ * How many cats each editor of a window gets: the setting is the number of cats in the window, shared out as evenly
+ * as possible over its visible editors (the first editors get one more when it does not divide). With more editors
+ * than cats, the editors at the end get none.
+ */
+export function catsForEditors(catCount: number, editors: number): number[] {
+  const total = Math.max(1, Math.round(Number.isFinite(catCount) ? catCount : 1));
+  const n = Math.max(0, Math.floor(editors));
+  const base = n > 0 ? Math.floor(total / n) : 0;
+  return Array.from({ length: n }, (_, i) => base + (i < total - base * n ? 1 : 0));
 }
 
 // ---------------------------------------------------------------------------------------------

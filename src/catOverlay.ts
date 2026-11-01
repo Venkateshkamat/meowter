@@ -3,7 +3,7 @@ import { planScene, sceneDataUri } from './catScene';
 import { assignStyles, CatStyle, distributeStyles } from './catStyles';
 import {
   AnchorMode,
-  catsPerEditor,
+  catsForEditors,
   columnFractions,
   computeLayout,
   computeLineHeight,
@@ -315,25 +315,39 @@ export class CatOverlay implements vscode.Disposable {
     const surfaces = CatOverlay.surfaces();
     const candidates = surfaces.map((s) => s.editor);
     const columns = new Set(surfaces.map((s) => s.column)).size;
-    for (const [editor, entry] of [...this.entries]) {
+    for (const editor of [...this.entries.keys()]) {
       if (!candidates.includes(editor)) {
-        this.disposeType(entry);
-        this.entries.delete(editor);
-        this.scenes.delete(editor);
+        this.remove(editor);
       }
     }
     const { catCount, styles } = this.config();
-    const perEditor = catsPerEditor(catCount, candidates.length);
+    // The setting is the number of cats in this window, shared out over its editors (both sides of a diff count).
+    const counts = catsForEditors(catCount, candidates.length);
     // Styles are dealt out over ALL the cats of all editors, so a small count still gets one of each style first.
     // A fighting pair stays together on one editor (see distributeStyles).
-    const assignment = distributeStyles(assignStyles(perEditor * candidates.length, styles), perEditor, candidates.length);
+    const total = counts.reduce((a, b) => a + b, 0);
+    const assignment = distributeStyles(assignStyles(total, styles), counts);
     for (const [index, surface] of surfaces.entries()) {
       try {
-        this.apply(surface, columns, perEditor, assignment[index]);
+        if (counts[index] === 0) {
+          this.remove(surface.editor);
+          continue;
+        }
+        this.apply(surface, columns, counts[index], assignment[index]);
       } catch (err) {
         console.error('Meowter: failed to decorate an editor', err);
       }
     }
+  }
+
+  /** Takes the cats off one editor. */
+  private remove(editor: vscode.TextEditor): void {
+    const entry = this.entries.get(editor);
+    if (entry) {
+      this.disposeType(entry);
+      this.entries.delete(editor);
+    }
+    this.scenes.delete(editor);
   }
 
   private lineHeightFor(editor: vscode.TextEditor): number {
