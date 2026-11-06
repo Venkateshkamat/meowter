@@ -95,8 +95,12 @@ const MAX_SCANNED_LINES = 200000;
 export class CatOverlay implements vscode.Disposable {
   private readonly entries = new Map<vscode.TextEditor, Entry>();
   private readonly scenes = new Map<vscode.TextEditor, Scene>();
-  /** Viewport rows learnt per editor (kept between breaks: an editor's height rarely changes). */
-  private readonly viewportRows = new WeakMap<vscode.TextEditor, number>();
+  /**
+   * Viewport rows learnt per editor group (its tabs all have the same height). Learnt all the time, not only during
+   * breaks, so a break that starts at the end of a file already knows how tall the editor is.
+   */
+  private readonly viewportRows = new Map<number, number>();
+  private readonly learners: vscode.Disposable[];
   private readonly listeners: vscode.Disposable[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
   private running = false;
@@ -113,6 +117,27 @@ export class CatOverlay implements vscode.Disposable {
   private layoutTimers: Array<ReturnType<typeof setTimeout>> = [];
   /** Which editors (and columns) the layout was last read for; see checkLayout. */
   private layoutSignature = '';
+
+  constructor() {
+    const learnAll = (): void => CatOverlay.surfaces().forEach((s) => this.learnViewport(s));
+    this.learners = [
+      vscode.window.onDidChangeTextEditorVisibleRanges((e) => {
+        const surface = CatOverlay.surfaces().find((s) => s.editor === e.textEditor);
+        if (surface) {
+          this.learnViewport(surface);
+        }
+      }),
+      vscode.window.onDidChangeVisibleTextEditors(learnAll),
+      vscode.window.tabGroups.onDidChangeTabGroups((e) => {
+        if (e.opened.length > 0 || e.closed.length > 0) {
+          // Groups were added or removed: the others changed height, and their columns may be renumbered.
+          this.viewportRows.clear();
+          learnAll();
+        }
+      })
+    ];
+    learnAll();
+  }
 
   /** Editors that can show cats: real editor tabs (not panel/output editors, not notebook cells). */
   static candidates(): vscode.TextEditor[] {
@@ -276,6 +301,9 @@ export class CatOverlay implements vscode.Disposable {
 
   dispose(): void {
     this.stop();
+    for (const l of this.learners.splice(0)) {
+      l.dispose();
+    }
   }
 
   /** Typing can make a line wider than the editor: re-check the cap, debounced. */
@@ -376,6 +404,23 @@ export class CatOverlay implements vscode.Disposable {
     return columns;
   }
 
+  /** Updates what is known about the height of the editor's group from its visible lines; returns the rows known. */
+  private learnViewport({ editor, column }: Surface): number | undefined {
+    const ranges = editor.visibleRanges;
+    if (ranges.length === 0) {
+      return column === undefined ? undefined : this.viewportRows.get(column);
+    }
+    const doc = editor.document;
+    const rows = ranges.reduce((n, r) => n + r.end.line - r.start.line + 1, 0);
+    const endVisible = ranges[ranges.length - 1].end.line >= doc.lineCount - 1;
+    const wraps = vscode.workspace.getConfiguration('editor', { uri: doc.uri, languageId: doc.languageId }).get<string>('wordWrap', 'off') !== 'off';
+    const known = viewportRowsFrom(column === undefined ? undefined : this.viewportRows.get(column), rows, !endVisible && !wraps);
+    if (column !== undefined) {
+      this.viewportRows.set(column, known);
+    }
+    return known;
+  }
+
   /** `columns`: how many editor groups show cats (the width share used until the real layout is read). */
   private apply(surface: Surface, columns: number, cats: number, catStyles: CatStyle[]): void {
     const { editor } = surface;
@@ -385,13 +430,10 @@ export class CatOverlay implements vscode.Disposable {
     if (ranges.length === 0) {
       return;
     }
-    const rows = ranges.reduce((n, r) => n + r.end - r.start + 1, 0);
     const cfg = vscode.workspace.getConfiguration('editor', { uri: doc.uri, languageId: doc.languageId });
-    const endVisible = ranges[ranges.length - 1].end >= doc.lineCount - 1;
     const wordWrap = cfg.get<string>('wordWrap', 'off');
     const wraps = wordWrap !== 'off';
-    const viewportRows = viewportRowsFrom(this.viewportRows.get(editor), rows, !endVisible && !wraps);
-    this.viewportRows.set(editor, viewportRows);
+    const viewportRows = this.learnViewport(surface);
     const layout: Layout | undefined = computeLayout(ranges, lh, { lineCount: doc.lineCount, viewportRows, wraps });
     if (!layout) {
       return;

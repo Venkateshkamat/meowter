@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 import type { MeowterTestApi } from '../../extension';
 import type { Notifier } from '../../notice';
 import { assignStyles, enabledStyles, STYLE_NAMES } from '../../catStyles';
-import { overlayWidthPx } from '../../overlayLayout';
+import { computeLineHeight, overlayWidthPx } from '../../overlayLayout';
 import { EXTENSION_MODE_TEST } from '../../testApi';
 
 const EXT_ID = 'venkateshkamat.meowter-cats';
@@ -769,6 +769,22 @@ suite('Meowter extension', () => {
       assert.strictEqual(api.getState().breakActive, true);
       const s = api.getOverlayState();
       assert.strictEqual(s.typesCreated - s.typesDisposed, 1);
+    });
+
+    test('a break that starts at the end of a file knows the editor height from before the break', async () => {
+      const editor = await openCode('meowter-test-end.ts', 400);
+      await waitFor(() => editor.visibleRanges.length > 0, 'lines in view');
+      await new Promise((r) => setTimeout(r, 500)); // (a newly opened editor reports a few rows too many at first)
+      const rowsInView = editor.visibleRanges[0].end.line - editor.visibleRanges[0].start.line + 1;
+      assert.ok(rowsInView > 16, `the test window shows enough lines: ${rowsInView}`);
+      editor.revealRange(new vscode.Range(399, 0, 399, 0), vscode.TextEditorRevealType.AtTop);
+      await waitFor(() => editor.visibleRanges[0].start.line >= 390, 'scrolled to the end');
+      await api.startBreakNow();
+      const info = api.getOverlayState().editors[0];
+      assert.strictEqual(info.anchor, 'top', 'the lines stop above the bottom of the editor');
+      const cfg = vscode.workspace.getConfiguration('editor');
+      const lineHeight = computeLineHeight(cfg.get<number>('fontSize', 14), cfg.get<number>('lineHeight', 0), process.platform === 'darwin');
+      assert.ok(info.heightPx >= (rowsInView - 2) * lineHeight, `as tall as the editor: ${info.heightPx}px for ${rowsInView} rows of ${lineHeight}px`);
     });
 
     test('scrolling re-anchors the cats to the visible lines', async () => {
