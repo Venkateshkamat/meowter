@@ -348,6 +348,73 @@ describe('SharedTimer', () => {
     });
   });
 
+  describe('a new day (12 am local time)', () => {
+    const at = (d: number, h: number, m = 0, sec = 0): number => new Date(2026, 10, d, h, m, sec).getTime();
+
+    it('starts the countdown over and ends a running break, in the file too', async () => {
+      clock.now = at(1, 23, 50);
+      file.state = freshState(clock.now);
+      const w = windowOn(file, clock);
+      w.resetClock(clock.now);
+      countSeconds(w, clock, 120);
+      await w.flush(INTERVAL * 100);
+      assert.strictEqual(file.state.activeMs, 120_000);
+      assert.strictEqual(w.isNewDay(), false);
+      clock.now = at(2, 0, 0, 1);
+      assert.strictEqual(w.isNewDay(), true);
+      await w.startNewDay();
+      assert.deepStrictEqual([w.view.activeMs, w.view.breakActive, w.pendingMs], [0, false, 0]);
+      assert.deepStrictEqual([file.state.activeMs, file.state.breakActive, file.state.day], [0, false, '2026-11-02']);
+      assert.strictEqual(w.isNewDay(), false);
+      // A break still showing at midnight ends.
+      await w.breakNow(INTERVAL);
+      assert.strictEqual(file.state.breakActive, true);
+      clock.now = at(3, 0, 0, 1);
+      await w.startNewDay();
+      assert.deepStrictEqual([w.view.breakActive, file.state.breakActive, file.state.activeMs], [false, false, 0]);
+    });
+
+    it('is a no-op on the same day', async () => {
+      clock.now = at(1, 9);
+      file.state = freshState(clock.now);
+      const w = windowOn(file, clock);
+      const writes = file.writes;
+      await w.startNewDay();
+      assert.strictEqual(file.writes, writes);
+    });
+
+    it('a second window does not wipe time another window already counted in the new day', async () => {
+      clock.now = at(1, 22);
+      file.state = { ...freshState(clock.now), activeMs: 40 * MIN };
+      const a = windowOn(file, clock);
+      const b = windowOn(file, clock);
+      clock.now = at(2, 0, 0, 1);
+      await a.startNewDay();
+      a.resetClock(clock.now);
+      countSeconds(a, clock, 30);
+      await a.flush(INTERVAL * 100);
+      assert.strictEqual(file.state.activeMs, 30_000);
+      // B wakes up later and still has yesterday's state in memory.
+      assert.strictEqual(b.isNewDay(), true);
+      await b.startNewDay();
+      assert.strictEqual(file.state.activeMs, 30_000, 'the file was already in the new day');
+      assert.strictEqual(b.view.activeMs, 30_000);
+    });
+
+    it('time not yet written before midnight is dropped, not added to the new day', async () => {
+      clock.now = at(1, 23, 59);
+      file.state = freshState(clock.now);
+      const w = windowOn(file, clock);
+      w.resetClock(clock.now);
+      countSeconds(w, clock, 10);
+      assert.strictEqual(w.pendingMs, 10_000);
+      clock.now = at(2, 0, 0, 1);
+      await w.startNewDay();
+      await w.flush(INTERVAL * 100);
+      assert.strictEqual(file.state.activeMs, 0);
+    });
+  });
+
   describe('when the file cannot be read', () => {
     it('a refresh rejects and changes nothing (no reset to fresh state)', async () => {
       const w = windowOn(file, clock);

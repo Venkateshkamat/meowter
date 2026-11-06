@@ -6,11 +6,18 @@ import {
   applyTick,
   DEFAULT_CAT_COUNT,
   MIN_CAT_COUNT,
+  applyNewDay,
   canPause,
+  dayKey,
+  effectiveIntervalMs,
   formatStatusText,
+  graceForInterval,
+  INTERVAL_GRACE_MS,
   freshState,
   isCounting,
+  isNewDay,
   MAX_DELTA_MS,
+  nextMidnight,
   normalizeCatCount,
   normalizeMinutes,
   parseIntervalInput,
@@ -131,6 +138,77 @@ describe('timer', () => {
       assert.strictEqual(r.breakActive, true);
       assert.strictEqual(r.breakId, 1);
       assert.strictEqual(applyBreakNow(r, 50 * MIN, 6), r);
+    });
+  });
+
+  describe('daily reset at 12 am local time', () => {
+    const at = (d: number, h: number, m = 0, sec = 0): number => new Date(2026, 10, d, h, m, sec).getTime();
+
+    it('names the local calendar day', () => {
+      assert.strictEqual(dayKey(at(1, 0)), '2026-11-01');
+      assert.strictEqual(dayKey(at(1, 23, 59, 59)), '2026-11-01');
+      assert.strictEqual(dayKey(at(2, 0)), '2026-11-02');
+      assert.strictEqual(dayKey(new Date(2026, 0, 5, 12).getTime()), '2026-01-05');
+    });
+    it('finds the next local midnight', () => {
+      assert.strictEqual(nextMidnight(at(1, 15, 30)), at(2, 0));
+      assert.strictEqual(nextMidnight(at(1, 0)), at(2, 0));
+      assert.strictEqual(nextMidnight(new Date(2026, 11, 31, 22).getTime()), new Date(2027, 0, 1).getTime());
+    });
+    it('a state from an earlier day starts over: countdown reset, break ended, break id kept', () => {
+      const yesterday = { ...applyDelta(freshState(at(1, 9)), 30 * MIN, 50 * MIN, at(1, 23, 50)).state };
+      assert.strictEqual(isNewDay(yesterday, at(1, 23, 59, 59)), false);
+      assert.strictEqual(isNewDay(yesterday, at(2, 0, 0, 1)), true);
+      const next = applyNewDay(yesterday, at(2, 0, 0, 1));
+      assert.deepStrictEqual([next.activeMs, next.breakActive, next.breakId, next.day], [0, false, 0, '2026-11-02']);
+      const inBreak = applyBreakNow(yesterday, 50 * MIN, at(1, 23, 55));
+      const ended = applyNewDay(inBreak, at(2, 7));
+      assert.deepStrictEqual([ended.activeMs, ended.breakActive, ended.breakId], [0, false, inBreak.breakId]);
+    });
+    it('the same day is left alone (the very same object)', () => {
+      const s = applyDelta(freshState(at(1, 9)), 10 * MIN, 50 * MIN, at(1, 10)).state;
+      assert.strictEqual(applyNewDay(s, at(1, 23, 59)), s);
+    });
+    it('time added after midnight to an old day keeps the old day, so it is still reset', () => {
+      const s = applyDelta(freshState(at(1, 9)), 10 * MIN, 50 * MIN, at(2, 0, 0, 5)).state;
+      assert.strictEqual(s.day, '2026-11-01');
+      assert.strictEqual(isNewDay(s, at(2, 0, 0, 6)), true);
+    });
+    it('files written before the day was stored use the day of their last write', () => {
+      const old = sanitizeState({ version: 1, activeMs: 5 * MIN, breakActive: false, breakId: 3, updatedAt: at(1, 18) });
+      assert.strictEqual(old.day, '2026-11-01');
+      assert.strictEqual(isNewDay(old, at(2, 8)), true);
+      assert.strictEqual(sanitizeState({ updatedAt: at(1, 18), day: 'garbage' }).day, '2026-11-01');
+      assert.strictEqual(sanitizeState({ updatedAt: at(1, 18), day: '2026-10-31' }).day, '2026-10-31');
+    });
+  });
+
+  describe('lowering the interval below the time counted', () => {
+    const counted = (activeMs: number, breakId = 2): ReturnType<typeof freshState> => ({ ...freshState(1000), activeMs, breakId });
+
+    it('needs no grace when the new interval is still ahead, or during a break', () => {
+      assert.strictEqual(graceForInterval(counted(10 * MIN), 30 * MIN), undefined);
+      assert.strictEqual(graceForInterval({ ...counted(10 * MIN), breakActive: true }, 3 * MIN), undefined);
+    });
+    it('typing "30" passes through "3": the break waits a minute of active use instead of starting at once', () => {
+      const s = counted(10 * MIN);
+      const grace = graceForInterval(s, 3 * MIN);
+      assert.ok(grace);
+      assert.strictEqual(effectiveIntervalMs(3 * MIN, grace, s), 10 * MIN + INTERVAL_GRACE_MS);
+      assert.strictEqual(applyDelta(s, 1000, effectiveIntervalMs(3 * MIN, grace, s), 2000).breakTriggered, false);
+      // Still a minute later the break is due.
+      const later = { ...s, activeMs: 10 * MIN + INTERVAL_GRACE_MS };
+      assert.strictEqual(applyDelta(later, 1000, effectiveIntervalMs(3 * MIN, grace, later), 2000).breakTriggered, true);
+      // A larger setting than the grace wins.
+      assert.strictEqual(effectiveIntervalMs(50 * MIN, grace, s), 50 * MIN);
+    });
+    it('the grace ends with the cycle: a pause, a break or a new break id', () => {
+      const s = counted(10 * MIN);
+      const grace = graceForInterval(s, 3 * MIN);
+      assert.strictEqual(effectiveIntervalMs(3 * MIN, grace, { ...s, activeMs: 0 }), 3 * MIN);
+      assert.strictEqual(effectiveIntervalMs(3 * MIN, grace, { ...s, breakActive: true }), 3 * MIN);
+      assert.strictEqual(effectiveIntervalMs(3 * MIN, grace, { ...s, breakId: 3 }), 3 * MIN);
+      assert.strictEqual(effectiveIntervalMs(3 * MIN, undefined, s), 3 * MIN);
     });
   });
 

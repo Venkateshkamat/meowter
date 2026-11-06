@@ -14,6 +14,7 @@
 - Counts only the time you are actively using the editor, shared across all your windows.
 - When the break is due, small pixel cats play on top of your code. They never block typing or clicking.
 - Click **🐱 I took a break ⏸** in the status bar (or the notification) to send them away and restart the timer.
+- The timer starts over every day at 12 am local time (a break still showing then ends too).
 - If no editor is open, the cats play in a tab instead.
 - Works in VS Code and Cursor.
 
@@ -35,7 +36,7 @@ Cats are dealt out to the enabled styles in turn, so the default 6 cats are one 
 | --- | --- | --- |
 | `meowter.breakIntervalMinutes` | 50 | Minutes of active use before a break. |
 | `meowter.idleThresholdMinutes` | 5 | Minutes without input after which time stops counting. |
-| `meowter.catCount` | 6 | Cats per editor (2 to 30). |
+| `meowter.catCount` | 6 | Cats in each window (2 to 30), shared out over its visible editors. |
 | `meowter.styles` | all on | Turn each style on or off: `wanderer`, `climber`, `bouncer`, `yarnChaser`, `fighters`. |
 
 Command: **Meowter: Set Break Interval**.
@@ -43,7 +44,8 @@ Command: **Meowter: Set Break Interval**.
 ## Known limitations
 
 - Cats move with the text when you scroll sideways.
-- Very long lines can make the cats' area narrower than the editor.
+- Very long lines can make the cats' area narrower than the editor (not with word wrap on).
+- When you scroll fast, the cats can vanish for a moment until they catch up with the new lines.
 
 ## Development
 

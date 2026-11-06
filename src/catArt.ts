@@ -246,7 +246,15 @@ interface Layer {
 }
 
 function render(layers: Layer[]): string[] {
-  const cv: string[][] = Array.from({ length: FRAME_SIZE }, () => Array<string>(FRAME_SIZE).fill('.'));
+  return outline(paint(layers));
+}
+
+function blankCanvas(): string[][] {
+  return Array.from({ length: FRAME_SIZE }, () => Array<string>(FRAME_SIZE).fill('.'));
+}
+
+/** Paints the layers in order onto `cv` (a blank canvas by default), without the outer outline. */
+function paint(layers: Layer[], cv: string[][] = blankCanvas()): string[][] {
   const put = (x: number, y: number, ch: string): void => {
     if (x < 0 || y < 0 || x >= FRAME_SIZE || y >= FRAME_SIZE) {
       throw new Error(`sprite pixel out of frame at ${x},${y}`);
@@ -281,7 +289,11 @@ function render(layers: Layer[]): string[] {
       }
     }
   }
-  // 1-pixel outline around everything.
+  return cv;
+}
+
+/** Adds the 1-pixel outline around everything painted. */
+function outline(cv: string[][]): string[] {
   const out = cv.map((row) => row.slice());
   for (let y = 0; y < FRAME_SIZE; y++) {
     for (let x = 0; x < FRAME_SIZE; x++) {
@@ -338,7 +350,7 @@ function quad(o: QuadOpts): Layer[] {
   ];
 }
 
-function walkFrame(phase: number): string[] {
+function walkLayers(phase: number): Layer[] {
   // Diagonal gait: (hindNear, frontFar) vs (frontNear, hindFar).
   const table: Array<{ a: [number, number]; b: [number, number] }> = [
     { a: [-1, 0], b: [1, 1] },
@@ -350,14 +362,16 @@ function walkFrame(phase: number): string[] {
   const bob = phase === 1 || phase === 3 ? -1 : 0;
   // Legs grow by the bob so the planted feet stay on the floor while the body rises.
   const mk = (p: [number, number]): QuadLeg => ({ g: legDown(7 - p[1] - bob), dx: p[0] });
-  return render(
-    quad({
-      ty: 17 + bob,
-      legs: [mk(a), mk(b), mk(a), mk(b)],
-      tail: phase % 2 === 0 ? TAIL_A : TAIL_B,
-      tailAt: [6, 11 + bob]
-    })
-  );
+  return quad({
+    ty: 17 + bob,
+    legs: [mk(a), mk(b), mk(a), mk(b)],
+    tail: phase % 2 === 0 ? TAIL_A : TAIL_B,
+    tailAt: [6, 11 + bob]
+  });
+}
+
+function walkFrame(phase: number): string[] {
+  return render(walkLayers(phase));
 }
 
 function runFrame(phase: number): string[] {
@@ -408,8 +422,12 @@ function runFrame(phase: number): string[] {
   ]);
 }
 
+function standLayers(tail: Grid, headKind: 'open' | 'blink'): Layer[] {
+  return quad({ tail, head: headVariant(headKind) });
+}
+
 function standFrame(tail: Grid, headKind: 'open' | 'blink'): string[] {
-  return render(quad({ tail, head: headVariant(headKind) }));
+  return render(standLayers(tail, headKind));
 }
 
 // ----- sit / swipe -----
@@ -575,46 +593,38 @@ function jumpFrame(kind: 'up' | 'fall' | 'land'): string[] {
 
 // ----- wall climbing (cat hugging a wall on its right) -----
 
-const CLIMB_TORSO: Grid = [
-  '.bmbbcc',
-  'bbmbbcc',
-  'bbbbbcc',
-  'bxxbbcc',
-  'bxxbbcc',
-  'bbbbbcc',
-  'bbybbcc',
-  '.bbbbcc',
-  '.bbbbbc',
-  '..bbbb.'
-];
-
-const CLIMB_TAIL: Grid = ['uu', 'um', 'uu', 'um', 'uu', 'uu', 'tt'];
-
-const ARM_CLIMB: Grid = ['.ff', '.bf', '.bb', '.bb', 'bb.', 'bb.', 'bb.', 'bb.'];
-
-function climbLayers(armHigh: 'near' | 'far', blink: boolean, tailShift: number, legUp: boolean): Layer[] {
-  const tx = 17;
-  const ty = 14;
-  const high: Layer = { g: ARM_CLIMB, x: tx + 8, y: ty - 8, shade: armHigh === 'far' };
-  const low: Layer = { g: ARM_CLIMB, x: tx + 8, y: ty - 4, shade: armHigh === 'near' };
-  const [first, second] = armHigh === 'far' ? [high, low] : [low, high];
-  return [
-    { g: CLIMB_TAIL, x: tx - 2 - tailShift, y: ty + 4 },
-    { g: legDown(4), x: tx + 1, y: ty + 8, shade: true },
-    first,
-    { g: CLIMB_TORSO, x: tx, y: ty },
-    { g: ['bbf', '.bf', '.ff'], x: tx + 4, y: ty + 7 - (legUp ? 1 : 0) },
-    second,
-    { g: headVariant(blink ? 'blink' : 'open'), x: tx + 1, y: ty - 8, ink: true }
-  ];
-}
-
-function climbFrame(phase: number): string[] {
-  return render(climbLayers(phase === 0 ? 'near' : 'far', false, 0, phase === 1));
-}
-
-function grabFrame(phase: number): string[] {
-  return render(climbLayers('near', phase === 1, phase % 2, false));
+/**
+ * A floor pose turned onto the wall on the cat's right: the body, legs and tail are rotated a quarter turn
+ * anticlockwise, so the cat points up with its paws on the wall, and the head (the last layer) is drawn upright on
+ * the shoulders, looking out. The result is moved so the paws touch the wall column and the lowest pixel sits on the
+ * floor line. So the climbers walk up and down the wall on the same legs they walk on the floor with.
+ */
+function wallFrame(layers: Layer[]): string[] {
+  const head = layers[layers.length - 1];
+  const flat = paint(layers.slice(0, -1));
+  const n = FRAME_SIZE;
+  const cv = Array.from({ length: n }, (_, y) => Array.from({ length: n }, (_, x) => flat[x][n - 1 - y]));
+  // The head's centre goes where the rotation takes it, nudged towards the wall so it sits on the shoulders.
+  const w = head.g[0].length;
+  const h = head.g.length;
+  const cx = head.x + w / 2;
+  const cy = head.y + h / 2;
+  paint([{ ...head, x: Math.round(cy - w / 2) + 1, y: Math.round(n - 1 - cx - h / 2) }], cv);
+  let maxCol = 0;
+  let maxRow = 0;
+  cv.forEach((row, y) =>
+    row.forEach((ch, x) => {
+      if (ch !== '.') {
+        maxCol = Math.max(maxCol, x);
+        maxRow = Math.max(maxRow, y);
+      }
+    })
+  );
+  // (the outline adds one more pixel on every side)
+  const dx = CONTENT_MAX_COL - 1 - maxCol;
+  const dy = FEET_ROWS - 2 - maxRow;
+  const moved = Array.from({ length: n }, (_, y) => Array.from({ length: n }, (_, x) => cv[y - dy]?.[x - dx] ?? '.'));
+  return outline(moved);
 }
 
 // ----- hiss (arched back, puffed tail, flat ears, open mouth) -----
@@ -771,11 +781,6 @@ const FRAMES: Record<string, string[]> = {
   swipe0: swipeFrame(0),
   swipe1: swipeFrame(1),
   swipe2: swipeFrame(2),
-  climb0: climbFrame(0),
-  climb1: climbFrame(1),
-  grab0: grabFrame(0),
-  grab1: grabFrame(1),
-  grab2: grabFrame(2),
   hiss0: hissFrame(0),
   hiss1: hissFrame(1),
   fight0: fightFrame(0),
@@ -783,6 +788,14 @@ const FRAMES: Record<string, string[]> = {
   fight2: fightFrame(2),
   fight3: fightFrame(3)
 };
+// Climbing is walking on the wall; hanging on it is standing on it.
+FRAMES.climb0 = wallFrame(walkLayers(0));
+FRAMES.climb1 = wallFrame(walkLayers(1));
+FRAMES.climb2 = wallFrame(walkLayers(2));
+FRAMES.climb3 = wallFrame(walkLayers(3));
+FRAMES.grab0 = wallFrame(standLayers(TAIL_A, 'open'));
+FRAMES.grab1 = wallFrame(standLayers(TAIL_A, 'blink'));
+FRAMES.grab2 = wallFrame(standLayers(TAIL_B, 'open'));
 
 export type AnimName =
   | 'idle'
@@ -816,7 +829,7 @@ export const ANIMATIONS: Readonly<Record<AnimName, Animation>> = {
   jump: { frames: ['jumpUp'], fps: 1 },
   fall: { frames: ['jumpFall'], fps: 1 },
   land: { frames: ['jumpLand'], fps: 1 },
-  climb: { frames: ['climb0', 'climb1'], fps: 4 },
+  climb: { frames: ['climb0', 'climb1', 'climb2', 'climb3'], fps: 6 },
   grab: { frames: ['grab0', 'grab0', 'grab1', 'grab0', 'grab2'], fps: 3 },
   hiss: { frames: ['hiss0', 'hiss0', 'hiss1', 'hiss0', 'hiss1', 'hiss1'], fps: 4 },
   fight: { frames: ['fight0', 'fight1', 'fight2', 'fight3'], fps: 8 }

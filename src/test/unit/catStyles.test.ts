@@ -170,6 +170,18 @@ describe('cat styles', () => {
       const lists = distributeStyles(assignStyles(4, ONLY_FIGHTERS), 1, 4);
       assert.ok(flat(lists).every((s) => s === 'wanderer'));
     });
+    it('takes a different count per editor (an uneven share), still never splitting a pair', () => {
+      const lists = distributeStyles(assignStyles(5), [3, 2]);
+      assert.deepStrictEqual(lists.map((l) => l.length), [3, 2]);
+      assert.deepStrictEqual(flat(lists).sort(), assignStyles(5).sort());
+      for (let total = 2; total <= 30; total++) {
+        const counts = [Math.ceil(total / 3), Math.ceil((total - Math.ceil(total / 3)) / 2)];
+        counts.push(total - counts[0] - counts[1]);
+        const per = distributeStyles(assignStyles(total), counts);
+        assert.deepStrictEqual(per.map((l) => l.length), counts);
+        for (const list of per) assert.strictEqual(count(list, 'fighters') % 2, 0, `no pair is split (${total}: ${list})`);
+      }
+    });
     it('a lone Fighter (which assignStyles never makes) is treated as a Wanderer', () => {
       assert.deepStrictEqual(distributeStyles(['fighters', 'climber'], 2, 1), [['wanderer', 'climber']]);
     });

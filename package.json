@@ -108,7 +108,7 @@
           "default": 6,
           "minimum": 2,
           "maximum": 30,
-          "description": "Number of cats shown during a break (a fighting pair counts as two)."
+          "description": "Number of cats shown in each window during a break, shared out over its visible editors (a fighting pair counts as two)."
         },
         "meowter.styles": {
           "type": "object",

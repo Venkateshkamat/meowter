@@ -178,6 +178,22 @@ describe('catArt sprite data', () => {
     }
   });
 
+  it('wall frames are the floor cat turned onto the wall: paws on the wall, head upright', () => {
+    for (const name of names.filter((n) => /^(climb|grab)/.test(n))) {
+      const px = painted(frameGrid(name));
+      // Front and hind paws are at the wall (a stepping paw lifts off it by a pixel), apart from each other.
+      const pawRows = px.filter((p) => p[2] === 'f' && p[0] >= CONTENT_MAX_COL - 2).map((p) => p[1]);
+      assert.ok(pawRows.length >= 4, `${name} paws on the wall: ${pawRows}`);
+      assert.ok(Math.max(...pawRows) - Math.min(...pawRows) >= 8, `${name} front and hind paws are apart`);
+      // The ears are above the eyes: the head is not turned on its side.
+      const earRows = px.filter((p) => p[2] === 'e').map((p) => p[1]);
+      const eyeRows = px.filter((p) => p[2] === 'k').map((p) => p[1]);
+      assert.ok(Math.max(...earRows) < Math.min(...eyeRows), `${name} ears above the eyes`);
+    }
+    // Climbing moves the legs like walking does.
+    assert.strictEqual(new Set(ANIMATIONS.climb.frames.map((f) => frameGrid(f).join(''))).size, ANIMATIONS.walk.frames.length);
+  });
+
   it('only the sleeping frames have z glyphs', () => {
     for (const name of names) {
       const hasZ = painted(frameGrid(name)).some((p) => p[2] === 'z');
