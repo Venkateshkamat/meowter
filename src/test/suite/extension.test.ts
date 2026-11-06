@@ -771,6 +771,25 @@ suite('Meowter extension', () => {
       assert.strictEqual(s.typesCreated - s.typesDisposed, 1);
     });
 
+    test('a diff tab shows the cats on both of its sides, not in a cat tab', async () => {
+      const left = (await openCode('meowter-test-diff-a.ts', 80)).document.uri;
+      const right = (await openCode('meowter-test-diff-b.ts', 81)).document.uri;
+      await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+      await vscode.commands.executeCommand('vscode.diff', left, right, 'meowter diff');
+      await waitFor(() => vscode.window.visibleTextEditors.length === 2, 'both sides of the diff');
+      await api.startBreakNow();
+      assert.strictEqual(api.getBreakMode(), 'overlay');
+      assert.strictEqual(api.isBreakPanelOpen(), false);
+      await waitFor(() => api.getOverlayState().editors.length === 2, 'cats on both sides');
+      const sides = api.getOverlayState().editors;
+      const want = vscode.workspace.getConfiguration('meowter').get<number>('catCount') ?? 6;
+      assert.strictEqual(sides.reduce((n, e) => n + e.cats, 0), want, 'the cats of the window, shared by the two sides');
+      for (const side of sides) {
+        assert.strictEqual(side.viewColumn, 1, 'both sides belong to the diff tab\'s group');
+        assert.ok(side.widthFraction <= 0.5, `each side has half of the group: ${side.widthFraction}`);
+      }
+    });
+
     test('a break that starts at the end of a file knows the editor height from before the break', async () => {
       const editor = await openCode('meowter-test-end.ts', 400);
       await waitFor(() => editor.visibleRanges.length > 0, 'lines in view');
