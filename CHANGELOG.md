@@ -2,6 +2,23 @@
 
 All notable changes to Meowter are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.3] - 2026-11-06
+
+### Changed
+
+- `meowter.catCount` is now the number of cats in each window, shared out over its visible editors. It used to be per editor, with a hidden limit of 8 per editor and 16 per window, so a setting of 30 now really shows 30.
+- The timer starts over every day at 12 am local time. A break still showing then ends too.
+
+### Fixed
+
+- Wall climbers now have proper legs: they use the same walk and stand poses as the cats on the floor.
+- Changing the break interval in the Settings editor no longer locks up the IDE. Typing a value saved every step of it ("30" saves "3" first), which could start a break mid-typing. A lowered interval that is already reached now allows one more minute of use before the break.
+- Git diff tabs show cats on both sides in Cursor, instead of opening a new cat tab.
+- Cats no longer appear doubled when scrolling with word wrap on, and scrolling no longer swaps them for new ones.
+- Cats keep the same size wherever the editor is scrolled, and stay near the bottom of the editor at the end of a file.
+- Cats no longer go behind the text in Cursor.
+- With word wrap on, files with long lines no longer squeeze the cats into a narrow strip.
+
 ## [1.0.2] - 2026-10-24
 
 ### Changed
